@@ -53,7 +53,7 @@ OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWA
 #include "mtl/Sort.h"
 #include "core/Solver.h"
 #include "core/Constants.h"
-#include"simp/SimpSolver.h"
+#include "simp/SimpSolver.h"
 
 using namespace Glucose;
 
@@ -963,6 +963,103 @@ void Solver::bumpForceUNSAT(Lit q) {
 }
 
 
+class MyPropagator {
+public:
+        MyPropagator(Solver& solver, OccLists<Lit, vec<Solver::Watcher>, Solver::WatcherDeleted>& watches, OccLists<Lit, vec<Solver::Watcher>, Solver::WatcherDeleted>& watchesBin, OccLists<Lit, vec<Solver::Watcher>, Solver::WatcherDeleted>& unaryWatches, int& qhead, vec<Lit>& trail)
+            : solver(solver), watches(watches), watchesBin(watchesBin), unaryWatches(unaryWatches), qhead(qhead), trail(trail) {}
+
+        CRef propagate() {
+            CRef confl = CRef_Undef;
+            int num_props = 0;
+            watches.cleanAll();
+            watchesBin.cleanAll();
+            unaryWatches.cleanAll();
+            while (qhead < trail.size()) {
+                Lit p = trail[qhead++]; // 'p' is enqueued fact to propagate.
+                vec <Solver::Watcher> &ws = watches[p];
+                Solver::Watcher *i, *j, *end;
+                num_props++;
+
+                // First, Propagate binary clauses
+                vec <Solver::Watcher> &wbin = watchesBin[p];
+                for (int k = 0; k < wbin.size(); k++) {
+                    Lit imp = wbin[k].blocker;
+
+                    if (solver.value(imp) == l_False) {
+                        return wbin[k].cref;
+                    }
+
+                    if (solver.value(imp) == l_Undef) {
+                        solver.uncheckedEnqueue(imp, wbin[k].cref);
+                    }
+                }
+
+                // Now propagate other 2-watched clauses
+                for (i = j = (Solver::Watcher *)ws, end = i + ws.size(); i != end;) {
+                    // Try to avoid inspecting the clause:
+                    Lit blocker = i->blocker;
+                    if (solver.value(blocker) == l_True) {
+                        *j++ = *i++;
+                        continue;
+                    }
+
+                    // Make sure the false literal is data[1]:
+                    CRef cr = i->cref;
+                    Clause &c = solver.ca[cr];
+                    assert(!c.getOneWatched());
+                    Lit false_lit = ~p;
+                    if (c[0] == false_lit)
+                        c[0] = c[1], c[1] = false_lit;
+                    assert(c[1] == false_lit);
+                    i++;
+
+                    // If 0th watch is true, then clause is already satisfied.
+                    Lit first = c[0];
+                    Solver::Watcher w = Solver::Watcher(cr, first);
+                    if (first != blocker && solver.value(first) == l_True) {
+                        *j++ = w;
+                        continue;
+                    }
+                    for (int k = 2; k < c.size(); k++) {
+                        if (solver.value(c[k]) != l_False) {
+                            c[1] = c[k];
+                            c[k] = false_lit;
+                            solver.watches[~c[1]].push(w);
+                            goto NextClause;
+                        }
+                    }
+                    // Did not find watch -- clause is unit under assignment:
+                    *j++ = w;
+                    if (solver.value(first) == l_False) {
+                        confl = cr;
+                        qhead = trail.size();
+                        // Copy the remaining watches:
+                        while (i < end)
+                            *j++ = *i++;
+                    } else {
+                        solver.uncheckedEnqueue(first, cr);
+                    }
+                NextClause:;
+                }
+                ws.shrink(i - j);
+
+                // unaryWatches "propagation"
+                if (solver.useUnaryWatched && confl == CRef_Undef) {
+                    confl = solver.propagateUnaryWatches(p);
+                }
+            }
+            return confl;
+        }
+
+    private:
+        Solver& solver;
+        OccLists<Lit, vec<Solver::Watcher>, Solver::WatcherDeleted>& watches;
+        OccLists<Lit, vec<Solver::Watcher>, Solver::WatcherDeleted>& watchesBin;
+        OccLists<Lit, vec<Solver::Watcher>, Solver::WatcherDeleted>& unaryWatches;
+        int& qhead;
+        vec<Lit>& trail;
+};
+
 /*_________________________________________________________________________________________________
 |
 |  propagate : [void]  ->  [Clause*]
@@ -981,116 +1078,9 @@ CRef Solver::propagate() {
     watchesBin.cleanAll();
     unaryWatches.cleanAll();
     while(qhead < trail.size()) {
-        Lit p = trail[qhead++]; // 'p' is enqueued fact to propagate.
-        vec <Watcher> &ws = watches[p];
-        Watcher *i, *j, *end;
-        num_props++;
-
-
-        // First, Propagate binary clauses
-        vec <Watcher> &wbin = watchesBin[p];
-        for(int k = 0; k < wbin.size(); k++) {
-
-            Lit imp = wbin[k].blocker;
-
-            if(value(imp) == l_False) {
-                return wbin[k].cref;
-            }
-
-            if(value(imp) == l_Undef) {
-                uncheckedEnqueue(imp, wbin[k].cref);
-            }
-        }
-
-        // Now propagate other 2-watched clauses
-        for(i = j = (Watcher *) ws, end = i + ws.size(); i != end;) {
-            // Try to avoid inspecting the clause:
-            Lit blocker = i->blocker;
-            if(value(blocker) == l_True) {
-                *j++ = *i++;
-                continue;
-            }
-
-            // Make sure the false literal is data[1]:
-            CRef cr = i->cref;
-            Clause &c = ca[cr];
-            assert(!c.getOneWatched());
-            Lit false_lit = ~p;
-            if(c[0] == false_lit)
-                c[0] = c[1], c[1] = false_lit;
-            assert(c[1] == false_lit);
-            i++;
-
-            // If 0th watch is true, then clause is already satisfied.
-            Lit first = c[0];
-            Watcher w = Watcher(cr, first);
-            if(first != blocker && value(first) == l_True) {
-
-                *j++ = w;
-                continue;
-            }
-#ifdef INCREMENTAL
-            if(incremental) { // ----------------- INCREMENTAL MODE
-              int choosenPos = -1;
-              for (int k = 2; k < c.size(); k++) {
-
-            if (value(c[k]) != l_False){
-              if(decisionLevel()>assumptions.size()) {
-                choosenPos = k;
-                break;
-              } else {
-                choosenPos = k;
-
-                if(value(c[k])==l_True || !isSelector(var(c[k]))) {
-                  break;
-                }
-              }
-
-            }
-              }
-              if(choosenPos!=-1) {
-            c[1] = c[choosenPos]; c[choosenPos] = false_lit;
-            watches[~c[1]].push(w);
-            goto NextClause; }
-            } else {  // ----------------- DEFAULT  MODE (NOT INCREMENTAL)
-#endif
-            for(int k = 2; k < c.size(); k++) {
-
-                if(value(c[k]) != l_False) {
-                    c[1] = c[k];
-                    c[k] = false_lit;
-                    watches[~c[1]].push(w);
-                    goto NextClause;
-                }
-            }
-#ifdef INCREMENTAL
-            }
-#endif
-            // Did not find watch -- clause is unit under assignment:
-            *j++ = w;
-            if(value(first) == l_False) {
-                confl = cr;
-                qhead = trail.size();
-                // Copy the remaining watches:
-                while(i < end)
-                    *j++ = *i++;
-            } else {
-                uncheckedEnqueue(first, cr);
-
-
-            }
-            NextClause:;
-        }
-        ws.shrink(i - j);
-
-        // unaryWatches "propagation"
-        if(useUnaryWatched && confl == CRef_Undef) {
-            confl = propagateUnaryWatches(p);
-
-        }
-
+        MyPropagator prop(*this, watches, watchesBin, unaryWatches, qhead, trail);
+        confl = prop.propagate();
     }
-
 
     propagations += num_props;
     simpDB_props -= num_props;
