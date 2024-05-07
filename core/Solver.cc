@@ -963,10 +963,70 @@ void Solver::bumpForceUNSAT(Lit q) {
 }
 
 
+struct NAryWatchList {
+    int size;
+    Solver::Watcher* array;
+}
+
+
 class MyPropagator {
 public:
-        MyPropagator(Solver& solver, OccLists<Lit, vec<Solver::Watcher>, Solver::WatcherDeleted>& watches, OccLists<Lit, vec<Solver::Watcher>, Solver::WatcherDeleted>& watchesBin, OccLists<Lit, vec<Solver::Watcher>, Solver::WatcherDeleted>& unaryWatches, int& qhead, vec<Lit>& trail)
-            : solver(solver), watches(watches), watchesBin(watchesBin), unaryWatches(unaryWatches), qhead(qhead), trail(trail) {}
+
+        /// @brief  converts literal into index
+        /// @param l 
+        /// @return var(l)*2+sign(l)
+        static int watch_index(Lit l) {
+            return var(l)*2 + int(sign(l));
+        }
+        MyPropagator(const Solver& solver)
+            : watches(solver.watches),
+              num_vars(solver.nVars()) {
+                new_trail = new Lit[num_vars];
+                trail_size = &solver.trail[solver.trail.size()] - &solver.trail[solver.qhead];
+                std::copy(&solver.trail[solver.qhead], &solver.trail[solver.trail.size()], new_trail);
+
+                assigns = new lbool[num_vars];
+                std::copy(&solver.assigns[0], &solver.assigns[num_vars], &assigns[0]);
+
+                vardata = new Solver::VarData[num_vars];
+                std::copy(&solver.vardata[0], &solver.vardata[num_vars], &vardata[0]);
+
+                watchesBin = new Solver::Watcher*[num_vars*2];
+                for (Var v = 0; v <= num_vars; ++v) {
+                    Lit lit = mkLit(v, false);
+                    vec<const Solver::Watcher> const& const watchlist = solver.watchesBin[lit];
+                    watchesBin[watch_index(lit)] = new Solver::Watcher[watchlist.size()];
+                    std::copy(watchlist.data, &watchlist.data+  watchlist.size(), &watchesBin[watch_index(lit)][0]);
+
+                    Lit lit = mkLit(v, true);
+                    vec<const Solver::Watcher> const& const  watchlist = solver.watchesBin[lit];
+                    watchesBin[watch_index(lit)] = new Solver::Watcher[watchlist.size()];
+                    std::copy(watchlist.begin(), watchlist.end(), &watchesBin[watch_index(lit)][0]);
+                }
+
+                watches = new NAryWatchList[num_vars*2];
+                for (Var v = 0; v <= num_vars; ++v) {
+                    Lit lit = mkLit(v, false);
+                    vec<const Solver::Watcher> const& const  watchlist = solver.watches[lit];
+                    watches[watch_index(lit)].array = new Solver::Watcher[watchlist.size()];
+                    watches[watch_index(lit)].size = watchlist.size();
+                    std::copy(watchlist.begin(), watchlist.end(), watches[watch_index(lit)].array);
+
+                    Lit lit = mkLit(v, true);
+                    vec<const Solver::Watcher> const& const  watchlist = solver.watches[lit];
+                    watches[watch_index(lit)].array = new Solver::Watcher[watchlist.size()];
+                    watches[watch_index(lit)].size = watchlist.size();
+                    std::copy(watchlist.begin(), watchlist.end(), watches[watch_index(lit)].array);
+                }
+            }
+
+
+        void uncheckedEnqueue(Lit p, CRef from) {
+            assert(value(p) == l_Undef);
+            assigns[var(p)] = lbool(!sign(p));
+            vardata[var(p)] = Solver::mkVarData(from, solver.decisionLevel());
+            new_trail[trail_size++] = p;
+        }
 
         CRef propagate() {
             CRef confl = CRef_Undef;
@@ -974,8 +1034,8 @@ public:
             watches.cleanAll();
             watchesBin.cleanAll();
             unaryWatches.cleanAll();
-            while (qhead < trail.size()) {
-                Lit p = trail[qhead++]; // 'p' is enqueued fact to propagate.
+            while (qhead < trail_size) {
+                Lit p = new_trail[qhead++]; // 'p' is enqueued fact to propagate.
                 vec <Solver::Watcher> &ws = watches[p];
                 Solver::Watcher *i, *j, *end;
                 num_props++;
@@ -990,7 +1050,7 @@ public:
                     }
 
                     if (solver.value(imp) == l_Undef) {
-                        solver.uncheckedEnqueue(imp, wbin[k].cref);
+                        uncheckedEnqueue(imp, wbin[k].cref);
                     }
                 }
 
@@ -1032,12 +1092,12 @@ public:
                     *j++ = w;
                     if (solver.value(first) == l_False) {
                         confl = cr;
-                        qhead = trail.size();
+                        qhead = trail_size;
                         // Copy the remaining watches:
                         while (i < end)
                             *j++ = *i++;
                     } else {
-                        solver.uncheckedEnqueue(first, cr);
+                        uncheckedEnqueue(first, cr);
                     }
                 NextClause:;
                 }
@@ -1051,13 +1111,22 @@ public:
             return confl;
         }
 
+
+        void write_back(Solver& solver, OccLists<Lit, vec<Solver::Watcher>, Solver::WatcherDeleted>& watches, OccLists<Lit, vec<Solver::Watcher>, Solver::WatcherDeleted>& watchesBin, OccLists<Lit, vec<Solver::Watcher>, Solver::WatcherDeleted>& unaryWatches, int& qhead, vec<Lit>& trail) {
+            //trail.insert(trail.end(), &this->trail[trail.size()], &this->trail[trail_size]) // not implemented on this vector
+            for (size_t i = trail.size(); i < trail_size; ++i) {
+                trail.push(trail[i]);
+            }
+        }
+
     private:
-        Solver& solver;
-        OccLists<Lit, vec<Solver::Watcher>, Solver::WatcherDeleted>& watches;
-        OccLists<Lit, vec<Solver::Watcher>, Solver::WatcherDeleted>& watchesBin;
-        OccLists<Lit, vec<Solver::Watcher>, Solver::WatcherDeleted>& unaryWatches;
-        int& qhead;
-        vec<Lit>& trail;
+        NAryWatchList* watches;
+        Solver::Watcher const ** watchesBin;   // array with pointers to arrays of watches, accessible for lit l via watchesBin[var(l)*2+int(sign(l))]
+        Lit* new_trail;
+        uint32_t trail_size;
+        const int num_vars;
+        lbool*          assigns;          // The current assignments.
+        Solver::VarData*    vardata;          // Stores reason and level for each variable.
 };
 
 /*_________________________________________________________________________________________________
@@ -1078,7 +1147,7 @@ CRef Solver::propagate() {
     watchesBin.cleanAll();
     unaryWatches.cleanAll();
     while(qhead < trail.size()) {
-        MyPropagator prop(*this, watches, watchesBin, unaryWatches, qhead, trail);
+        MyPropagator prop(*this, watches, watchesBin, unaryWatches, qhead, trail, assigns, vardata);
         confl = prop.propagate();
     }
 

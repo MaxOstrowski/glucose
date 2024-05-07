@@ -274,7 +274,7 @@ public:
     // Important stats completely related to search. Keep here
     uint64_t solves,starts,decisions,propagations,conflicts,conflictsRestarts;
 
-protected:
+public:
 
     long curRestart;
 
