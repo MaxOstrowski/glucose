@@ -54,7 +54,7 @@ OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWA
 #include "core/Solver.h"
 #include "core/Constants.h"
 #include "simp/SimpSolver.h"
-
+#include "core/MySolver.h"
 using namespace Glucose;
 
 
@@ -962,173 +962,6 @@ void Solver::bumpForceUNSAT(Lit q) {
     return;
 }
 
-
-struct NAryWatchList {
-    int size;
-    Solver::Watcher* array;
-}
-
-
-class MyPropagator {
-public:
-
-        /// @brief  converts literal into index
-        /// @param l 
-        /// @return var(l)*2+sign(l)
-        static int watch_index(Lit l) {
-            return var(l)*2 + int(sign(l));
-        }
-        MyPropagator(const Solver& solver)
-            : watches(solver.watches),
-              num_vars(solver.nVars()) {
-                new_trail = new Lit[num_vars];
-                trail_size = &solver.trail[solver.trail.size()] - &solver.trail[solver.qhead];
-                std::copy(&solver.trail[solver.qhead], &solver.trail[solver.trail.size()], new_trail);
-
-                assigns = new lbool[num_vars];
-                std::copy(&solver.assigns[0], &solver.assigns[num_vars], &assigns[0]);
-
-                vardata = new Solver::VarData[num_vars];
-                std::copy(&solver.vardata[0], &solver.vardata[num_vars], &vardata[0]);
-
-                watchesBin = new Solver::Watcher*[num_vars*2];
-                for (Var v = 0; v <= num_vars; ++v) {
-                    Lit lit = mkLit(v, false);
-                    vec<const Solver::Watcher> const& const watchlist = solver.watchesBin[lit];
-                    watchesBin[watch_index(lit)] = new Solver::Watcher[watchlist.size()];
-                    std::copy(watchlist.data, &watchlist.data+  watchlist.size(), &watchesBin[watch_index(lit)][0]);
-
-                    Lit lit = mkLit(v, true);
-                    vec<const Solver::Watcher> const& const  watchlist = solver.watchesBin[lit];
-                    watchesBin[watch_index(lit)] = new Solver::Watcher[watchlist.size()];
-                    std::copy(watchlist.begin(), watchlist.end(), &watchesBin[watch_index(lit)][0]);
-                }
-
-                watches = new NAryWatchList[num_vars*2];
-                for (Var v = 0; v <= num_vars; ++v) {
-                    Lit lit = mkLit(v, false);
-                    vec<const Solver::Watcher> const& const  watchlist = solver.watches[lit];
-                    watches[watch_index(lit)].array = new Solver::Watcher[watchlist.size()];
-                    watches[watch_index(lit)].size = watchlist.size();
-                    std::copy(watchlist.begin(), watchlist.end(), watches[watch_index(lit)].array);
-
-                    Lit lit = mkLit(v, true);
-                    vec<const Solver::Watcher> const& const  watchlist = solver.watches[lit];
-                    watches[watch_index(lit)].array = new Solver::Watcher[watchlist.size()];
-                    watches[watch_index(lit)].size = watchlist.size();
-                    std::copy(watchlist.begin(), watchlist.end(), watches[watch_index(lit)].array);
-                }
-            }
-
-
-        void uncheckedEnqueue(Lit p, CRef from) {
-            assert(value(p) == l_Undef);
-            assigns[var(p)] = lbool(!sign(p));
-            vardata[var(p)] = Solver::mkVarData(from, solver.decisionLevel());
-            new_trail[trail_size++] = p;
-        }
-
-        CRef propagate() {
-            CRef confl = CRef_Undef;
-            int num_props = 0;
-            watches.cleanAll();
-            watchesBin.cleanAll();
-            unaryWatches.cleanAll();
-            while (qhead < trail_size) {
-                Lit p = new_trail[qhead++]; // 'p' is enqueued fact to propagate.
-                vec <Solver::Watcher> &ws = watches[p];
-                Solver::Watcher *i, *j, *end;
-                num_props++;
-
-                // First, Propagate binary clauses
-                vec <Solver::Watcher> &wbin = watchesBin[p];
-                for (int k = 0; k < wbin.size(); k++) {
-                    Lit imp = wbin[k].blocker;
-
-                    if (solver.value(imp) == l_False) {
-                        return wbin[k].cref;
-                    }
-
-                    if (solver.value(imp) == l_Undef) {
-                        uncheckedEnqueue(imp, wbin[k].cref);
-                    }
-                }
-
-                // Now propagate other 2-watched clauses
-                for (i = j = (Solver::Watcher *)ws, end = i + ws.size(); i != end;) {
-                    // Try to avoid inspecting the clause:
-                    Lit blocker = i->blocker;
-                    if (solver.value(blocker) == l_True) {
-                        *j++ = *i++;
-                        continue;
-                    }
-
-                    // Make sure the false literal is data[1]:
-                    CRef cr = i->cref;
-                    Clause &c = solver.ca[cr];
-                    assert(!c.getOneWatched());
-                    Lit false_lit = ~p;
-                    if (c[0] == false_lit)
-                        c[0] = c[1], c[1] = false_lit;
-                    assert(c[1] == false_lit);
-                    i++;
-
-                    // If 0th watch is true, then clause is already satisfied.
-                    Lit first = c[0];
-                    Solver::Watcher w = Solver::Watcher(cr, first);
-                    if (first != blocker && solver.value(first) == l_True) {
-                        *j++ = w;
-                        continue;
-                    }
-                    for (int k = 2; k < c.size(); k++) {
-                        if (solver.value(c[k]) != l_False) {
-                            c[1] = c[k];
-                            c[k] = false_lit;
-                            solver.watches[~c[1]].push(w);
-                            goto NextClause;
-                        }
-                    }
-                    // Did not find watch -- clause is unit under assignment:
-                    *j++ = w;
-                    if (solver.value(first) == l_False) {
-                        confl = cr;
-                        qhead = trail_size;
-                        // Copy the remaining watches:
-                        while (i < end)
-                            *j++ = *i++;
-                    } else {
-                        uncheckedEnqueue(first, cr);
-                    }
-                NextClause:;
-                }
-                ws.shrink(i - j);
-
-                // unaryWatches "propagation"
-                if (solver.useUnaryWatched && confl == CRef_Undef) {
-                    confl = solver.propagateUnaryWatches(p);
-                }
-            }
-            return confl;
-        }
-
-
-        void write_back(Solver& solver, OccLists<Lit, vec<Solver::Watcher>, Solver::WatcherDeleted>& watches, OccLists<Lit, vec<Solver::Watcher>, Solver::WatcherDeleted>& watchesBin, OccLists<Lit, vec<Solver::Watcher>, Solver::WatcherDeleted>& unaryWatches, int& qhead, vec<Lit>& trail) {
-            //trail.insert(trail.end(), &this->trail[trail.size()], &this->trail[trail_size]) // not implemented on this vector
-            for (size_t i = trail.size(); i < trail_size; ++i) {
-                trail.push(trail[i]);
-            }
-        }
-
-    private:
-        NAryWatchList* watches;
-        Solver::Watcher const ** watchesBin;   // array with pointers to arrays of watches, accessible for lit l via watchesBin[var(l)*2+int(sign(l))]
-        Lit* new_trail;
-        uint32_t trail_size;
-        const int num_vars;
-        lbool*          assigns;          // The current assignments.
-        Solver::VarData*    vardata;          // Stores reason and level for each variable.
-};
-
 /*_________________________________________________________________________________________________
 |
 |  propagate : [void]  ->  [Clause*]
@@ -1146,10 +979,13 @@ CRef Solver::propagate() {
     watches.cleanAll();
     watchesBin.cleanAll();
     unaryWatches.cleanAll();
-    while(qhead < trail.size()) {
-        MyPropagator prop(*this, watches, watchesBin, unaryWatches, qhead, trail, assigns, vardata);
-        confl = prop.propagate();
-    }
+    MyPropagator prop(*this);
+    confl = prop.propagate();
+    prop.write_back(*this);
+    // while(qhead < trail.size()) {
+    //     MyPropagator prop(*this);
+    //     confl = prop.propagate();
+    // }
 
     propagations += num_props;
     simpDB_props -= num_props;
