@@ -199,10 +199,11 @@ int main(int argc, char** argv)
                     printf("c WARNING! Could not set resource limit: Virtual memory.\n");
             } }
 
-        if (argc == 1)
-            printf("c Reading from standard input... Use '--help' for help.\n");
-
-        gzFile in = (argc == 1) ? gzdopen(0, "rb") : gzopen(argv[1], "rb");
+        //if (argc == 1)
+        //    printf("c Reading from standard input... Use '--help' for help.\n");
+        //
+        //gzFile in = (argc == 1) ? gzdopen(0, "rb") : gzopen(argv[1], "rb");
+        gzFile in = gzopen("../examples/aim-100-1_6-no-1.cnf", "rb");
         if (in == NULL)
             printf("ERROR! Could not open file: %s\n", argc == 1 ? "<stdin>" : argv[1]), exit(1);
 

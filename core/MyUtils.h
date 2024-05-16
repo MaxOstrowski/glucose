@@ -25,7 +25,7 @@ struct FixedSizeVector {
     }
 
     T& operator[](int index) {
-        assert (index < current_size);
+        assert (index < maximum_size);
         return array[index];
     }
     const T& operator[](int index) const {

@@ -3,6 +3,7 @@
 #include "core/Solver.h"
 #include "core/SolverTypes.h"
 #include <algorithm>
+#include <iostream>
 
 using namespace Glucose;
 
@@ -13,44 +14,48 @@ using namespace Glucose;
 MyPropagator::MyPropagator(Solver &solver)
     : num_vars(solver.nVars()), decision_level(solver.decisionLevel()), new_trail(FixedSizeVector<Lit>(num_vars, &solver.trail[solver.qhead], solver.trail.size() - solver.qhead)),
       old_trail_size(solver.trail.size() - solver.qhead), confl(CRef_Undef), assigns_vardata(FixedSizeVector<AssignVardata>(num_vars)),
-
-      watchesBin(FixedSizeVector<VariableSizedVector<Solver::Watcher>>(num_vars * 2)), watches(FixedSizeVector<VariableSizedVector<CRef>>(num_vars * 2)),
+      watchesBin(FixedSizeVector<VariableSizedVector<Solver::Watcher>>(num_vars * 2 + 1)), watches(FixedSizeVector<VariableSizedVector<CRef>>(num_vars * 2 + 1)),
       ca(FixedSizeVector<uint32_t>(solver.ca.size() * 2, reinterpret_cast<uint32_t *>(solver.ca.lea(0)), solver.ca.size())) {
 
   // copy assigns and vardata
   for (int i = 0; i < num_vars; i++) {
-    assigns_vardata[i].assign = solver.assigns[i];
-    assigns_vardata[i].vardata = solver.vardata[i];
+    assigns_vardata.push_back(MyPropagator::AssignVardata(solver.assigns[i], solver.vardata[i]));
   }
 
-  for (Var v = 0; v <= num_vars; ++v) {
+  for (Var v = 0; v < num_vars; ++v) {
     {
       Lit lit = mkLit(v, false);
+      auto dummy = watch_index(lit);
       vec<Solver::Watcher> &watchlist = solver.watchesBin[lit];
       watchesBin[watch_index(lit)].append(&watchlist[0], watchlist.size());
     }
 
     {
       Lit lit = mkLit(v, true);
+      auto dummy = watch_index(lit);
       vec<Solver::Watcher> &watchlist = solver.watchesBin[lit];
       watchesBin[watch_index(lit)].append(&watchlist[0], watchlist.size());
     }
   }
 
   // create nary watches like binary watches
-  for (Var v = 0; v <= num_vars; ++v) {
+  for (Var v = 0; v < num_vars; ++v) {
     {
       Lit lit = mkLit(v, false);
       vec<Solver::Watcher> &watchlist = solver.watches[lit];
+      watches.push_back(VariableSizedVector<CRef>(watchlist.size()));
+      auto &wl = watches[watch_index(lit)];
       for (int i = 0; i < watchlist.size(); i++) {
-        watches[watch_index(lit)].push_back(watchlist[i].cref);
+        wl.push_back(watchlist[i].cref);
       }
     }
     {
       Lit lit = mkLit(v, true);
       vec<Solver::Watcher> &watchlist = solver.watches[lit];
+      watches.push_back(VariableSizedVector<CRef>(watchlist.size()));
+      auto &wl = watches[watch_index(lit)];
       for (int i = 0; i < watchlist.size(); i++) {
-        watches[watch_index(lit)].push_back(watchlist[i].cref);
+        wl.push_back(watchlist[i].cref);
       }
     }
   }
@@ -92,39 +97,30 @@ void binary_propagation(int trail_min, int trail_max, FixedSizeVector<Lit> &new_
   }
 }
 
-// void delayed_swap(Clause &c, int i, int j) {
-//   /// TODO: delay swap to after nary propagation
-
-//   Reihenfolge ist wichtig damit das richtige geswapped wird
-//   Lit tmp = c[i];
-//   c[i] = c[j];
-//   c[j] = tmp;
-// }
-
 /// @brief add literal to new trail and assign/vardata
 void uncheckedEnqueue(Lit p, CRef cref, FixedSizeVector<MyPropagator::AssignVardata> &assigns_vardata, FixedSizeVector<Lit> &new_trail) {
   new_trail.push_back(p);
   assigns_vardata[var(p)] = MyPropagator::AssignVardata(lbool(!sign(p)), Solver::mkVarData(cref, 0));
-
 }
 
 // add nary watch
-void add_watch(Lit p, CRef cref, FixedSizeVector<VariableSizedVector<CRef>> &watches) {
-  watches[MyPropagator::watch_index(p)].push_back(cref);
-}
+void add_watch(Lit p, CRef cref, FixedSizeVector<VariableSizedVector<CRef>> &watches) { watches[MyPropagator::watch_index(p)].push_back(cref); }
 
-void nary_propagation(int trail_min, int trail_max, FixedSizeVector<Lit> &new_trail, FixedSizeVector<MyPropagator::AssignVardata> &assigns_vardata,
-                      FixedSizeVector<VariableSizedVector<CRef>> &watches, FixedSizeVector<uint32_t> &ca, const int decision_level, CRef &confl) {
+void nary_propagation(int trail_min, int trail_max, FixedSizeVector<Lit> &new_trail, FixedSizeVector<MyPropagator::AssignVardata> &assigns_vardata, FixedSizeVector<VariableSizedVector<CRef>> &watches,
+                      FixedSizeVector<uint32_t> &ca, const int decision_level, CRef &confl) {
   int trail_p = trail_min;
   while (trail_p < trail_max) {
     Lit p = new_trail[trail_p++];
     VariableSizedVector<CRef> &wnary = watches[MyPropagator::watch_index(p)];
     for (int k = 0; k < wnary.size(); k++) {
+      std::cout << "Literal " << MyPropagator::watch_index(p) << " and wnary " << k << std::endl;
       CRef cref = wnary[k];
       Clause &clause = *reinterpret_cast<Clause *>(&ca[cref]);
 
       int first = -1;
-      while(++first < clause.size()) {
+      // std::cout << "first " << first << std::endl;
+      while (++first < clause.size()) {
+        // std::cout << "first in while " << first << std::endl;
         if (value(clause[first], assigns_vardata) == l_True) {
           return;
         }
@@ -133,7 +129,7 @@ void nary_propagation(int trail_min, int trail_max, FixedSizeVector<Lit> &new_tr
         }
       }
       int second = first;
-      while(++second < clause.size()) {
+      while (++second < clause.size()) {
         if (value(clause[second], assigns_vardata) == l_True) {
           return;
         }
@@ -146,18 +142,18 @@ void nary_propagation(int trail_min, int trail_max, FixedSizeVector<Lit> &new_tr
         if (first == -1) {
           confl = cref;
           return;
-          
         }
-          uncheckedEnqueue(clause[first], cref, assigns_vardata, new_trail);
-          return;
+        uncheckedEnqueue(clause[first], cref, assigns_vardata, new_trail);
+        return;
       }
       // we have first and second unassigned and need to reassign watches
       add_watch(clause[first], cref, watches); // append to be done synced and in ary order
-      wnary[k] = CRef_Undef;     
+      wnary[k] = CRef_Undef;
     }
     // reduce wnary to remove CRef_Undef parts
-    std::remove_if(wnary.array, wnary.array + wnary.current_size, [](CRef cref) { return cref == CRef_Undef; });
-    
+
+    auto end = std::remove_if(wnary.array, wnary.array + wnary.current_size, [](CRef cref) { return cref == CRef_Undef; });
+    wnary.current_size = end - wnary.array;
   }
 }
 
@@ -183,6 +179,8 @@ CRef MyPropagator::propagate() {
     if (confl != CRef_Undef) {
       return confl;
     }
+
+    trail_min = trail_max;
   }
 
   return confl;
@@ -227,7 +225,7 @@ void MyPropagator::write_back(Solver &solver) {
   solver.qhead = solver.trail.size();
 
   // clear old solver watches
-  for (Var v = 0; v <= num_vars; ++v) {
+  for (Var v = 0; v < num_vars; ++v) {
     {
       Lit lit = mkLit(v, false);
       solver.watches[lit].clear();
