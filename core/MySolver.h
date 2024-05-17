@@ -26,7 +26,7 @@ public:
     delete_vector(watches);
     delete_vector(ca);
   }
-  CRef propagate();
+  CRef propagate(int& num_props);
   void write_back(Solver &solver); // write back the changes
 
   struct __attribute__((aligned(16))) AssignVardata {

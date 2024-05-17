@@ -55,13 +55,18 @@ struct VariableSizedVector {
     int current_size;
     int maximum_size;
 
-    VariableSizedVector() : current_size(0), maximum_size(0) {}
-    VariableSizedVector(int maximum_size) : array(new T[maximum_size]), current_size(0), maximum_size(maximum_size) {}
+    VariableSizedVector() : array(new T[100]), current_size(0), maximum_size(100)  {}
+    VariableSizedVector(int maximum_size) : array(new T[maximum_size]), current_size(0), maximum_size(maximum_size) { assert (maximum_size > 0); }
     // Constructor copying array of fixed size
     VariableSizedVector(int maximum_size, const T* array, int size) : array(new T[maximum_size]), current_size(size), maximum_size(maximum_size) {
+        assert (maximum_size > 0);
         for (int i = 0; i < size; i++) {
             this->array[i] = array[i];
         }
+    }
+
+    ~VariableSizedVector() {
+        delete[] array;
     }
 
     void push_back(const T& element) {

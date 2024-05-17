@@ -38,33 +38,38 @@ MyPropagator::MyPropagator(Solver &solver)
     }
   }
 
-  // create nary watches like binary watches
-  for (Var v = 0; v < num_vars; ++v) {
-    {
-      Lit lit = mkLit(v, false);
-      vec<Solver::Watcher> &watchlist = solver.watches[lit];
-      watches.push_back(VariableSizedVector<CRef>(watchlist.size()));
-      auto &wl = watches[watch_index(lit)];
-      for (int i = 0; i < watchlist.size(); i++) {
-        wl.push_back(watchlist[i].cref);
-      }
-    }
-    {
-      Lit lit = mkLit(v, true);
-      vec<Solver::Watcher> &watchlist = solver.watches[lit];
-      watches.push_back(VariableSizedVector<CRef>(watchlist.size()));
-      auto &wl = watches[watch_index(lit)];
-      for (int i = 0; i < watchlist.size(); i++) {
-        wl.push_back(watchlist[i].cref);
+
+  /// create complete occuruence lists in watches
+  for (int i = 0; i < solver.clauses.size(); i++) {
+    Clause &clause = *reinterpret_cast<Clause *>(&solver.ca[solver.clauses[i]]);
+    if (clause.size() > 2) {
+      for (int j = 0; j < clause.size(); j++) {
+        watches[watch_index(clause[j])].push_back(solver.clauses[i]);
       }
     }
   }
+  for (int i = 0; i < solver.learnts.size(); i++) {
+    Clause &clause = *reinterpret_cast<Clause *>(&solver.ca[solver.learnts[i]]);
+    if (clause.size() > 2) {
+      for (int j = 0; j < clause.size(); j++) {
+        watches[watch_index(clause[j])].push_back(solver.learnts[i]);
+      }
+    }
+  }
+  for (int i = 0; i < solver.permanentLearnts.size(); i++) {
+    Clause &clause = *reinterpret_cast<Clause *>(&solver.ca[solver.permanentLearnts[i]]);
+    if (clause.size() > 2) {
+      for (int j = 0; j < clause.size(); j++) {
+        watches[watch_index(clause[j])].push_back(solver.permanentLearnts[i]);
+      }
+    }
+  }
+
 }
 
 lbool value(Lit p, const FixedSizeVector<MyPropagator::AssignVardata> &assigns) { return assigns[var(p)].assign ^ sign(p); }
 
-void valid_propagation(int trail_min, int trail_max, FixedSizeVector<Lit> &new_trail, FixedSizeVector<MyPropagator::AssignVardata> &assigns_vardata,
-                       FixedSizeVector<VariableSizedVector<Solver::Watcher>> &watchesBin, const int decision_level, CRef &confl) {
+void valid_propagation(int trail_min, int trail_max, FixedSizeVector<Lit> &new_trail, FixedSizeVector<MyPropagator::AssignVardata> &assigns_vardata, CRef &confl) {
   int trail_p = trail_min;
   while (trail_p < trail_max) {
     Lit p = new_trail[trail_p++];
@@ -104,7 +109,7 @@ void uncheckedEnqueue(Lit p, CRef cref, FixedSizeVector<MyPropagator::AssignVard
 }
 
 // add nary watch
-void add_watch(Lit p, CRef cref, FixedSizeVector<VariableSizedVector<CRef>> &watches) { watches[MyPropagator::watch_index(p)].push_back(cref); }
+void add_watch(Lit p, Lit blocker, CRef cref, FixedSizeVector<VariableSizedVector<Solver::Watcher>> &watches) { watches[MyPropagator::watch_index(p)].push_back(Solver::Watcher(cref, blocker)); }
 
 void nary_propagation(int trail_min, int trail_max, FixedSizeVector<Lit> &new_trail, FixedSizeVector<MyPropagator::AssignVardata> &assigns_vardata, FixedSizeVector<VariableSizedVector<CRef>> &watches,
                       FixedSizeVector<uint32_t> &ca, const int decision_level, CRef &confl) {
@@ -113,55 +118,41 @@ void nary_propagation(int trail_min, int trail_max, FixedSizeVector<Lit> &new_tr
     Lit p = new_trail[trail_p++];
     VariableSizedVector<CRef> &wnary = watches[MyPropagator::watch_index(p)];
     for (int k = 0; k < wnary.size(); k++) {
-      std::cout << "Literal " << MyPropagator::watch_index(p) << " and wnary " << k << std::endl;
       CRef cref = wnary[k];
-      Clause &clause = *reinterpret_cast<Clause *>(&ca[cref]);
+      const Clause& clause = *reinterpret_cast<Clause*>(&ca[reinterpret_cast<uint32_t>(cref)]);
+      Lit l = lit_Undef;
 
-      int first = -1;
-      // std::cout << "first " << first << std::endl;
-      while (++first < clause.size()) {
-        // std::cout << "first in while " << first << std::endl;
-        if (value(clause[first], assigns_vardata) == l_True) {
-          return;
+      for (int i = 0; i < clause.size(); i++) {
+        if (value(clause[i], assigns_vardata) == l_True) {
+          goto Continue;  // at least 1 true literal
         }
-        if (value(clause[first], assigns_vardata) == l_Undef) {
-          break;
-        }
-      }
-      int second = first;
-      while (++second < clause.size()) {
-        if (value(clause[second], assigns_vardata) == l_True) {
-          return;
-        }
-        if (value(clause[second], assigns_vardata) == l_Undef) {
-          break;
+        if (value(clause[i], assigns_vardata) == l_Undef) {
+          if (l != lit_Undef) {
+            goto Continue; // 2 undefined literals
+          }
+          l = clause[i];
         }
       }
-      if (second == clause.size()) {
-        /// only first literal found something (or nothing)
-        if (first == -1) {
-          confl = cref;
-          return;
-        }
-        uncheckedEnqueue(clause[first], cref, assigns_vardata, new_trail);
+      /// all literals are false
+      if (l == lit_Undef) {
+        confl = cref;
         return;
       }
-      // we have first and second unassigned and need to reassign watches
-      add_watch(clause[first], cref, watches); // append to be done synced and in ary order
-      wnary[k] = CRef_Undef;
-    }
-    // reduce wnary to remove CRef_Undef parts
 
-    auto end = std::remove_if(wnary.array, wnary.array + wnary.current_size, [](CRef cref) { return cref == CRef_Undef; });
-    wnary.current_size = end - wnary.array;
+      uncheckedEnqueue(l, cref, assigns_vardata, new_trail);
+
+      Continue:
+      ;
+    }
   }
 }
 
-CRef MyPropagator::propagate() {
-  int num_props = 0;
+
+CRef MyPropagator::propagate(int& num_props) {
   int trail_min = 0;
   while (trail_min < new_trail.size()) {
     int trail_max = new_trail.size();
+    num_props += trail_max - trail_min;
 
     binary_propagation(trail_min, trail_max, new_trail, assigns_vardata, watchesBin, decision_level, confl);
     if (confl != CRef_Undef) {
@@ -175,7 +166,7 @@ CRef MyPropagator::propagate() {
 
     // sync
 
-    valid_propagation(trail_min, trail_max, new_trail, assigns_vardata, watchesBin, decision_level, confl);
+    valid_propagation(trail_min, trail_max, new_trail, assigns_vardata, confl);
     if (confl != CRef_Undef) {
       return confl;
     }

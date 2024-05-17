@@ -980,7 +980,7 @@ CRef Solver::propagate() {
     watchesBin.cleanAll();
     unaryWatches.cleanAll();
     MyPropagator prop(*this);
-    confl = prop.propagate();
+    confl = prop.propagate(num_props);
     prop.write_back(*this);
     // while(qhead < trail.size()) {
     //     MyPropagator prop(*this);
