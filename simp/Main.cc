@@ -203,7 +203,8 @@ int main(int argc, char** argv)
         //    printf("c Reading from standard input... Use '--help' for help.\n");
         //
         //gzFile in = (argc == 1) ? gzdopen(0, "rb") : gzopen(argv[1], "rb");
-        gzFile in = (argc == 1) ? gzopen("../examples/aim-100-1_6-no-1.cnf", "rb") : gzopen(argv[1], "rb");
+        //gzFile in = (argc == 1) ? gzopen("../examples/aim-100-1_6-no-1.cnf", "rb") : gzopen(argv[1], "rb");
+        gzFile in = (argc == 1) ? gzopen("../examples/comp23/03a43a7ea55217f53542ed3f029963af-satch2ways16w.cnf", "rb") : gzopen(argv[1], "rb");
         if (in == NULL)
             printf("ERROR! Could not open file: %s\n", argc == 1 ? "<stdin>" : argv[1]), exit(1);
 

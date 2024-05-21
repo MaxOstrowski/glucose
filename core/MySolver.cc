@@ -44,7 +44,7 @@ MyPropagator::MyPropagator(Solver &solver)
     Clause &clause = *reinterpret_cast<Clause *>(&solver.ca[solver.clauses[i]]);
     if (clause.size() > 2) {
       for (int j = 0; j < clause.size(); j++) {
-        watches[watch_index(clause[j])].push_back(solver.clauses[i]);
+        watches[watch_index(~clause[j])].push_back(solver.clauses[i]);
       }
     }
   }
@@ -52,7 +52,7 @@ MyPropagator::MyPropagator(Solver &solver)
     Clause &clause = *reinterpret_cast<Clause *>(&solver.ca[solver.learnts[i]]);
     if (clause.size() > 2) {
       for (int j = 0; j < clause.size(); j++) {
-        watches[watch_index(clause[j])].push_back(solver.learnts[i]);
+        watches[watch_index(~clause[j])].push_back(solver.learnts[i]);
       }
     }
   }
@@ -103,9 +103,10 @@ void binary_propagation(int trail_min, int trail_max, FixedSizeVector<Lit> &new_
 }
 
 /// @brief add literal to new trail and assign/vardata
-void uncheckedEnqueue(Lit p, CRef cref, FixedSizeVector<MyPropagator::AssignVardata> &assigns_vardata, FixedSizeVector<Lit> &new_trail) {
+void uncheckedEnqueue(Lit p, CRef cref, FixedSizeVector<MyPropagator::AssignVardata> &assigns_vardata, FixedSizeVector<Lit> &new_trail, int decision_level) {
+  //std::cout << " propagate " << var(p) << " " << sign(p) << " with reason " << cref << std::endl;
   new_trail.push_back(p);
-  assigns_vardata[var(p)] = MyPropagator::AssignVardata(lbool(!sign(p)), Solver::mkVarData(cref, 0));
+  assigns_vardata[var(p)] = MyPropagator::AssignVardata(lbool(!sign(p)), Solver::mkVarData(cref, decision_level));
 }
 
 // add nary watch
@@ -139,7 +140,7 @@ void nary_propagation(int trail_min, int trail_max, FixedSizeVector<Lit> &new_tr
         return;
       }
 
-      uncheckedEnqueue(l, cref, assigns_vardata, new_trail);
+      uncheckedEnqueue(l, cref, assigns_vardata, new_trail, decision_level);
 
       Continue:
       ;
@@ -156,11 +157,13 @@ CRef MyPropagator::propagate(int& num_props) {
 
     binary_propagation(trail_min, trail_max, new_trail, assigns_vardata, watchesBin, decision_level, confl);
     if (confl != CRef_Undef) {
+      //std::cout << "conflict: " << confl << std::endl;
       return confl;
     }
 
     nary_propagation(trail_min, trail_max, new_trail, assigns_vardata, watches, ca, decision_level, confl);
     if (confl != CRef_Undef) {
+      //std::cout << "conflict: " << confl << std::endl;
       return confl;
     }
 
@@ -168,12 +171,13 @@ CRef MyPropagator::propagate(int& num_props) {
 
     valid_propagation(trail_min, trail_max, new_trail, assigns_vardata, confl);
     if (confl != CRef_Undef) {
+      //std::cout << "conflict: " << confl << std::endl;
       return confl;
     }
 
     trail_min = trail_max;
   }
-
+  //std::cout << "no conflict: " << confl << std::endl;
   return confl;
 }
 
@@ -191,7 +195,15 @@ static uint32_t watchOrder(const Solver &s, Lit p) {
   // DL+1,  if isFree(p)
   // DL(p), if isFalse(p)
   // ~DL(p),if isTrue(p)
-  uint32_t abstr_p = value_p == l_Undef ? s.decisionLevel() + 1 : s.level(var(p)) ^ -(value_p == (sign(p) ? l_True : l_False));
+  uint32_t abstr_p ;
+  
+  if (value_p == l_Undef)
+    abstr_p = s.decisionLevel() + 1;
+  else {
+    abstr_p = s.level(var(p));
+    if (value_p == (sign(p) ? l_False : l_True))
+      abstr_p = ~abstr_p;
+  }
   assert(abstr_p > 0 || (s.value(p) == l_False && s.level(var(p)) == 0));
   return abstr_p;
 }
@@ -201,7 +213,8 @@ void reorder_clause(Solver &solver, CRef cref) {
   Clause &clause = *dynamic_cast<Clause *>(&solver.ca[cref]);
   if (clause.size() > 2 && !(clause.mark() & 1)) {
     Lit *it = const_cast<Lit *>(static_cast<const Lit *>(clause));
-    std::nth_element(it, it + 2, it + clause.size(), [&](Lit a, Lit b) { return watchOrder(solver, a) > watchOrder(solver, b); });
+    //std::nth_element(it, it + 2, it + clause.size(), [&](Lit a, Lit b) { return watchOrder(solver, a) > watchOrder(solver, b); });
+    std::sort(it, it + clause.size(), [&](Lit a, Lit b) { return watchOrder(solver, a) > watchOrder(solver, b); });
     solver.attachClause(cref);
   }
 }

@@ -55,6 +55,7 @@ OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWA
 #include "core/Constants.h"
 #include "simp/SimpSolver.h"
 #include "core/MySolver.h"
+#include <iostream>
 using namespace Glucose;
 
 
@@ -683,7 +684,6 @@ void Solver::analyze(CRef confl, vec <Lit> &out_learnt, vec <Lit> &selectors, in
     int pathC = 0;
     Lit p = lit_Undef;
 
-
     // Generate conflict clause:
     //
     out_learnt.push(); // (leave room for the asserting literal)
@@ -691,6 +691,10 @@ void Solver::analyze(CRef confl, vec <Lit> &out_learnt, vec <Lit> &selectors, in
     do {
         assert(confl != CRef_Undef); // (otherwise should be UIP)
         Clause &c = ca[confl];
+        // std::cout << "c analysiere " << confl << std::endl;
+        // for (int i = 0; i < c.size(); i++) {
+        //     std::cout << "c " << var(c[i]) << " " << sign(c[i]) << " with level " << level(var(c[i]))<< std::endl;
+        // }
         // Special case for binary clauses
         // The first one has to be SAT
         if(p != lit_Undef && c.size() == 2 && value(c[0]) == l_False) {
@@ -731,8 +735,11 @@ void Solver::analyze(CRef confl, vec <Lit> &out_learnt, vec <Lit> &selectors, in
         }
 
 
-        for(int j = (p == lit_Undef) ? 0 : 1; j < c.size(); j++) {
+        //for(int j = (p == lit_Undef) ? 0 : 1; j < c.size(); j++) {
+        for(int j = (p == lit_Undef) ? 0 : 0; j < c.size(); j++) {
             Lit q = c[j];
+            if (p == q)
+                continue;
 
             if(!seen[var(q)]) {
                 if(level(var(q)) == 0) {
@@ -755,6 +762,7 @@ void Solver::analyze(CRef confl, vec <Lit> &out_learnt, vec <Lit> &selectors, in
                             assert(value(q) == l_False);
                             selectors.push(q);
                         } else
+                            //std::cout << "add learnt " << var(q) << " " << sign(q) << std::endl;
                             out_learnt.push(q);
                     }
                 }
