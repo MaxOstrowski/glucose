@@ -37,6 +37,7 @@ namespace Glucose {
 
 template<class T>
 class vec {
+public:
     T*  data;
     int sz;
     int cap;

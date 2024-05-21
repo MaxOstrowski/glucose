@@ -26,8 +26,9 @@ public:
     delete_vector(watches);
     delete_vector(ca);
   }
-  CRef propagate(int& num_props);
+  CRef propagate();
   void write_back(Solver &solver); // write back the changes
+  void compare(Solver & solver, CRef confl); // compare the changes with the solver
 
   struct __attribute__((aligned(16))) AssignVardata {
     AssignVardata() : assign(l_Undef), vardata() {}

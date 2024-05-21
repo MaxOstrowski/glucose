@@ -362,6 +362,11 @@ public:
     vec<unsigned int>   permDiff;           // permDiff[var] contains the current conflict number... Used to count the number of  LBD
 
 
+    int cpu_duration; // total duration of propagate in ms
+    int gpu_duration; // total duration of propagate in ms
+    int num_prop; // total number of propagate calls in search
+
+
     // UPDATEVARACTIVITY trick (see competition'09 companion paper)
     vec<Lit> lastDecisionLevel;
 

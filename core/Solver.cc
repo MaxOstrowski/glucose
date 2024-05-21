@@ -56,6 +56,7 @@ OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWA
 #include "simp/SimpSolver.h"
 #include "core/MySolver.h"
 #include <iostream>
+#include <chrono>
 using namespace Glucose;
 
 
@@ -207,6 +208,9 @@ verbosity(0)
     sumLBD = 0;
     nbclausesbeforereduce = firstReduceDB;
     stats.growTo(coreStatsSize, 0);
+    cpu_duration = 0;
+    gpu_duration = 0;
+    num_prop = 0;
 }
 
 //-------------------------------------------------------
@@ -321,7 +325,9 @@ Solver::Solver(const Solver &s) :
     s.forceUNSAT.copyTo(forceUNSAT);
     s.stats.copyTo(stats);
 
-
+    cpu_duration = 0;
+    gpu_duration = 0;
+    num_prop = 0;
 }
 
 
@@ -982,18 +988,122 @@ void Solver::bumpForceUNSAT(Lit q) {
 |      * the propagation queue is empty, even if there was a conflict.
 |________________________________________________________________________________________________@*/
 CRef Solver::propagate() {
-    CRef confl = CRef_Undef;
+   CRef confl = CRef_Undef;
     int num_props = 0;
     watches.cleanAll();
     watchesBin.cleanAll();
     unaryWatches.cleanAll();
-    MyPropagator prop(*this);
-    confl = prop.propagate(num_props);
-    prop.write_back(*this);
-    // while(qhead < trail.size()) {
-    //     MyPropagator prop(*this);
-    //     confl = prop.propagate();
-    // }
+    while(qhead < trail.size()) {
+        Lit p = trail[qhead++]; // 'p' is enqueued fact to propagate.
+        vec <Watcher> &ws = watches[p];
+        Watcher *i, *j, *end;
+        num_props++;
+
+
+        // First, Propagate binary clauses
+        vec <Watcher> &wbin = watchesBin[p];
+        for(int k = 0; k < wbin.size(); k++) {
+
+            Lit imp = wbin[k].blocker;
+
+            if(value(imp) == l_False) {
+                return wbin[k].cref;
+            }
+
+            if(value(imp) == l_Undef) {
+                uncheckedEnqueue(imp, wbin[k].cref);
+            }
+        }
+
+        // Now propagate other 2-watched clauses
+        for(i = j = (Watcher *) ws, end = i + ws.size(); i != end;) {
+            // Try to avoid inspecting the clause:
+            Lit blocker = i->blocker;
+            if(value(blocker) == l_True) {
+                *j++ = *i++;
+                continue;
+            }
+
+            // Make sure the false literal is data[1]:
+            CRef cr = i->cref;
+            Clause &c = ca[cr];
+            assert(!c.getOneWatched());
+            Lit false_lit = ~p;
+            if(c[0] == false_lit)
+                c[0] = c[1], c[1] = false_lit;
+            assert(c[1] == false_lit);
+            i++;
+
+            // If 0th watch is true, then clause is already satisfied.
+            Lit first = c[0];
+            Watcher w = Watcher(cr, first);
+            if(first != blocker && value(first) == l_True) {
+
+                *j++ = w;
+                continue;
+            }
+#ifdef INCREMENTAL
+            if(incremental) { // ----------------- INCREMENTAL MODE
+              int choosenPos = -1;
+              for (int k = 2; k < c.size(); k++) {
+
+            if (value(c[k]) != l_False){
+              if(decisionLevel()>assumptions.size()) {
+                choosenPos = k;
+                break;
+              } else {
+                choosenPos = k;
+
+                if(value(c[k])==l_True || !isSelector(var(c[k]))) {
+                  break;
+                }
+              }
+
+            }
+              }
+              if(choosenPos!=-1) {
+            c[1] = c[choosenPos]; c[choosenPos] = false_lit;
+            watches[~c[1]].push(w);
+            goto NextClause; }
+            } else {  // ----------------- DEFAULT  MODE (NOT INCREMENTAL)
+#endif
+            for(int k = 2; k < c.size(); k++) {
+
+                if(value(c[k]) != l_False) {
+                    c[1] = c[k];
+                    c[k] = false_lit;
+                    watches[~c[1]].push(w);
+                    goto NextClause;
+                }
+            }
+#ifdef INCREMENTAL
+            }
+#endif
+            // Did not find watch -- clause is unit under assignment:
+            *j++ = w;
+            if(value(first) == l_False) {
+                confl = cr;
+                qhead = trail.size();
+                // Copy the remaining watches:
+                while(i < end)
+                    *j++ = *i++;
+            } else {
+                uncheckedEnqueue(first, cr);
+
+
+            }
+            NextClause:;
+        }
+        ws.shrink(i - j);
+
+        // unaryWatches "propagation"
+        if(useUnaryWatched && confl == CRef_Undef) {
+            confl = propagateUnaryWatches(p);
+
+        }
+
+    }
+
 
     propagations += num_props;
     simpDB_props -= num_props;
@@ -1359,7 +1469,22 @@ lbool Solver::search(int nof_conflicts) {
                 return l_False;
 
         }
+        std::chrono::high_resolution_clock::time_point t1, t2, t3;
+
+        
+        MyPropagator myprop(*this);
+        t1 = std::chrono::high_resolution_clock::now();
+        myprop.propagate();
+        t2 = std::chrono::high_resolution_clock::now();
+        gpu_duration += std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
         CRef confl = propagate();
+        t3 = std::chrono::high_resolution_clock::now();
+        cpu_duration += std::chrono::duration_cast<std::chrono::microseconds>(t3 - t2).count();
+        myprop.compare(*this, confl);
+        num_prop += 1;
+        if (num_prop%100 == 0){
+            std::cout << "num_prop: " << num_prop << ", gpu_duration: " << gpu_duration/num_prop << ", cpu_duration: " << cpu_duration/num_prop << std::endl;
+        }
 
         if(confl != CRef_Undef) {
             newDescent = false;

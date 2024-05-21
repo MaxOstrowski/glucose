@@ -4,6 +4,7 @@
 #include "core/SolverTypes.h"
 #include <algorithm>
 #include <iostream>
+#include <set>
 
 using namespace Glucose;
 
@@ -149,11 +150,10 @@ void nary_propagation(int trail_min, int trail_max, FixedSizeVector<Lit> &new_tr
 }
 
 
-CRef MyPropagator::propagate(int& num_props) {
+CRef MyPropagator::propagate() {
   int trail_min = 0;
   while (trail_min < new_trail.size()) {
     int trail_max = new_trail.size();
-    num_props += trail_max - trail_min;
 
     binary_propagation(trail_min, trail_max, new_trail, assigns_vardata, watchesBin, decision_level, confl);
     if (confl != CRef_Undef) {
@@ -217,6 +217,19 @@ void reorder_clause(Solver &solver, CRef cref) {
     std::sort(it, it + clause.size(), [&](Lit a, Lit b) { return watchOrder(solver, a) > watchOrder(solver, b); });
     solver.attachClause(cref);
   }
+}
+
+
+void MyPropagator::compare(Solver &solver, CRef confl) {
+  /// either both are in conflict or both are not in conflict
+  if (this->confl == CRef_Undef && confl == CRef_Undef) {
+
+    // both trails are the same (set comparison)
+    assert(std::set<Lit>(new_trail.array, new_trail.array + new_trail.size()) == std::set<Lit>(solver.trail.data + solver.trail.size() - new_trail.size(), solver.trail.data + solver.trail.size()));
+    return;
+  }
+
+  assert (this->confl != CRef_Undef && confl != CRef_Undef);
 }
 
 /// @brief write back all temporary datastructures to the original solver
