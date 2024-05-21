@@ -1476,10 +1476,10 @@ lbool Solver::search(int nof_conflicts) {
         t1 = std::chrono::high_resolution_clock::now();
         myprop.propagate();
         t2 = std::chrono::high_resolution_clock::now();
-        gpu_duration += std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
+        gpu_duration += std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - t1).count();
         CRef confl = propagate();
         t3 = std::chrono::high_resolution_clock::now();
-        cpu_duration += std::chrono::duration_cast<std::chrono::microseconds>(t3 - t2).count();
+        cpu_duration += std::chrono::duration_cast<std::chrono::nanoseconds>(t3 - t2).count();
         myprop.compare(*this, confl);
         num_prop += 1;
         if (num_prop%100 == 0){
