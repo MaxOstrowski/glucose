@@ -28,11 +28,13 @@ public:
   }
   CRef propagate();
   void write_back(Solver &solver); // write back the changes
-  void compare(Solver & solver, CRef confl); // compare the changes with the solver
+  void compare(Solver &solver,
+               CRef confl); // compare the changes with the solver
 
   struct __attribute__((aligned(16))) AssignVardata {
     AssignVardata() : assign(l_Undef), vardata() {}
-    AssignVardata(lbool assign, Solver::VarData vardata) : assign(assign), vardata(vardata) {}
+    AssignVardata(lbool assign, Solver::VarData vardata)
+        : assign(assign), vardata(vardata) {}
     lbool assign;
     Solver::VarData vardata;
   };
