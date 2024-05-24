@@ -11,6 +11,8 @@ using namespace Glucose;
 
 __host__ int watch_index(Lit l) { return var(l) * 2 + int(sign(l)); }
 
+void copyConflictToHost(MySolver &solver);
+
 MySolver create_solver(Solver &solver)
 {
   MySolver mysolver;
@@ -21,10 +23,12 @@ MySolver create_solver(Solver &solver)
   gpuErrchk(cudaMalloc((void **)&mysolver.confl_device, sizeof(CRef)));
   mysolver.confl_host = new CRef(CRef_Undef);
   
-  gpuErrchk(cudaMemcpy(mysolver.confl_device, &mysolver.confl_host, sizeof(CRef), cudaMemcpyHostToDevice));
+  gpuErrchk(cudaMemcpy(mysolver.confl_device, mysolver.confl_host, sizeof(CRef), cudaMemcpyHostToDevice));
+
+  copyConflictToHost(mysolver);
 
   gpuErrchk(cudaMalloc((void **)&mysolver.new_trail, sizeof(Lit) * num_vars));
-  gpuErrchk(cudaMemcpy(mysolver.new_trail, &solver.trail[0], solver.trail.size(), cudaMemcpyHostToDevice));
+  gpuErrchk(cudaMemcpy(mysolver.new_trail, &solver.trail[0], solver.trail.size()*sizeof(Lit), cudaMemcpyHostToDevice));
 
   gpuErrchk(cudaMalloc((void **)&mysolver.trail_size, sizeof(unsigned int)));
   unsigned int trail_size = solver.trail.size();
@@ -155,6 +159,7 @@ MySolver create_solver(Solver &solver)
 
 __device__ inline lbool_device create_bool_device_from_uc(lbool_device x) { return (lbool_device)(x); }
 __device__ inline lbool_device create_bool_device_from_bool(bool x) { return (lbool_device)(!x); }
+__device__ inline bool compare_lbool_device(lbool_device a, lbool_device b) { return ((b&2) & (a&2)) | (!(b&2)&(a == b)); }
 __device__ inline bool sign_device(Lit p) { return p.x & 1; }
 __device__ inline int var_device(Lit p) { return p.x >> 1; }
 __device__ Lit  mkLit_device(Var var, bool sign = false) { Lit p; p.x = var + var + (int)sign; return p; }
@@ -186,8 +191,13 @@ __device__ void uncheckedEnqueue(Lit p, CRef cref, AssignVardata *assigns_vardat
   assigns_vardata[var_device(p)] = temp; // ensure that these are written atomically relaxed
 }
 
-__device__ lbool_device value(Lit p, AssignVardata *assigns)
+__device__ lbool_device value_device(Lit p, AssignVardata *assigns)
 {
+  // printf("value for %d %d\n", var_device(p), sign_device(p));
+  // printf("value assign %d\n", assigns[var_device(p)].assign);
+  // printf("value sign %d\n", sign_device(p));
+  // printf("value %d\n", assigns[var_device(p)].assign ^ (lbool_device)(sign_device(p)));
+  // printf("value %d\n", create_bool_device_from_uc((lbool_device)assigns[var_device(p)].assign ^ (lbool_device)(sign_device(p))));
   return create_bool_device_from_uc((lbool_device)(assigns[var_device(p)].assign ^ (lbool_device)(sign_device(p))));
 }
 
@@ -196,6 +206,8 @@ void destroy_solver(MySolver &solver)
     gpuErrchk(cudaFree(solver.confl_device));
     gpuErrchk(cudaFree(solver.new_trail));
     gpuErrchk(cudaFree(solver.trail_size));
+    delete [] solver.host_trail;
+    gpuErrchk(cudaFree(solver.qhead));
     gpuErrchk(cudaFree(solver.assigns_vardata));
     for (unsigned int i = 0; i < solver.host_num_vars; ++i)
     {
@@ -215,33 +227,48 @@ __global__ void binary_propagation(
     unsigned int* qhead, int trail_max, Lit *new_trail, unsigned int *trail_size, AssignVardata *assigns_vardata, binWatchVector *watchesBin, const int decision_level, CRef *confl)
 {
   unsigned int trail_p = *qhead;
+  // printf("enter binary_propagation %d %d %d\n", trail_p, *trail_size, trail_max);
   while (trail_p < trail_max)
   {
+    // printf("binary propagation %d\n", trail_p);
     Lit p = new_trail[trail_p++];
+    // printf("binary propagation %d %d\n", var_device(p), sign_device(p));
+    // printf("watch binary clauses with index %d\n", watch_index_device(p));
     auto &wbin = watchesBin[watch_index_device(p)];
     for (int k = 0; k < wbin.size; k++)
     {
+      // printf("binary propagation wbin %d of %d\n", k, wbin.size);
       Lit imp = wbin.watches[k].blocker;
-      if (value(imp, assigns_vardata) == l_False_device)
+      // printf("binary propagation imp %d %d\n", var_device(imp), sign_device(imp));
+      // printf("binary propagation value %d\n", value_device(imp, assigns_vardata));
+      /// be careful, there was a hidden == operator that didnt compare for equality
+      if (compare_lbool_device(value_device(imp, assigns_vardata), l_False_device))
       {
+        // printf("binary propagation conflict %d detected\n", wbin.watches[k].cref);
         *confl = wbin.watches[k].cref;
         return;
       }
-      if (value(imp, assigns_vardata) == l_Undef_device)
+      if (compare_lbool_device(value_device(imp, assigns_vardata), l_Undef_device))
       {
+        // printf("binary propagation enqueue %d %d\n", var_device(imp), sign_device(imp));
         uncheckedEnqueue(imp, wbin.watches[k].cref, assigns_vardata, new_trail, trail_size, decision_level);
+      }
+      else
+      {
+        // printf("binary propagation else\n");
       }
     }
   }
   *qhead = trail_max;
   if (*trail_size > trail_max) {
+    // printf("call binary_propagation recursion\n");
     binary_propagation<<<1, 1>>>(qhead, *trail_size, new_trail, trail_size, assigns_vardata, watchesBin, decision_level, confl);
   }
 }
 
 void copyConflictToHost(MySolver &solver)
 {
-  gpuErrchk(cudaMemcpy(&solver.confl_host, solver.confl_device, sizeof(CRef), cudaMemcpyDeviceToHost));
+  gpuErrchk(cudaMemcpy(solver.confl_host, solver.confl_device, sizeof(CRef), cudaMemcpyDeviceToHost));
 }
 
 void copyTrailToHost(MySolver &solver)
@@ -258,25 +285,38 @@ void compare(MySolver &solver, Solver& s, CRef confl)
   if (*solver.confl_host == CRef_Undef && confl == CRef_Undef)
   {
     // both trails are the same (set comparison)
+    // print host trail and trail
+    // for (int i = 0; i < solver.host_trail_size; i++)
+    // {
+    //   std::cout << "host trail " << i << " " << toInt(solver.host_trail[i]) << std::endl;
+    // }
+    // for (int i = 0; i < s.trail.size(); i++)
+    // {
+    //   std::cout << "trail " << i << " " << toInt(s.trail[i]) << std::endl;
+    // }
     std::set<Lit> myset(solver.host_trail, solver.host_trail + solver.host_trail_size);
     std::set<Lit> theirset(s.trail.data, s.trail.data + s.trail.size());
     // write relation between the two sets
+    // std::cout << "host trail size " << solver.host_trail_size << " trail size " << s.trail.size() << std::endl;
+    // std::cout << "sizes: " << myset.size() << "/" << theirset.size() << std::endl;
     // if myset is a subset of theirset
     if (std::includes(theirset.begin(), theirset.end(), myset.begin(), myset.end()))
     {
-      //std::cout << "fine" << std::endl;
+      // std::cout << "my set is a subset of theirs" << std::endl;
       return;
     }
     // if theirset is a subset of myset
     if (std::includes(myset.begin(), myset.end(), theirset.begin(), theirset.end()))
     {
       std::cout << "theirset is a subset of myset" << std::endl;
+      return;
     }
+    std::cout << "trails complte different" << std::endl;
     return;
   }
 
   if(confl != CRef_Undef) { // they have a conflict
-    //std::cout << "fine" << std::endl;
+    // std::cout << "they have conflict, fine" << std::endl;
     return;
   }
   assert (*solver.confl_host != CRef_Undef && confl == CRef_Undef);
@@ -285,6 +325,10 @@ void compare(MySolver &solver, Solver& s, CRef confl)
 
 void propagate(MySolver &solver)
 {
+  static int num = 0;
+  // std::cout << "propagate " << num << std::endl;
+  ++num;
+
 
   // binary_propagation<<<trail_max-trail_min, 32>>>
   binary_propagation<<<1, 1>>>(solver.qhead, solver.host_trail_size, solver.new_trail, solver.trail_size, solver.assigns_vardata, solver.watchesBin, solver.decision_level, solver.confl_device);

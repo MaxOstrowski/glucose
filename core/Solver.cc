@@ -994,24 +994,35 @@ CRef Solver::propagate() {
     watchesBin.cleanAll();
     unaryWatches.cleanAll();
     while(qhead < trail.size()) {
+        // std::cout << "c propagate " << qhead << "/" << trail.size() << std::endl;
         Lit p = trail[qhead++]; // 'p' is enqueued fact to propagate.
+        // std::cout << "c propagate " << var(p) << " " << sign(p) << std::endl;
         vec <Watcher> &ws = watches[p];
         Watcher *i, *j, *end;
         num_props++;
 
 
         // First, Propagate binary clauses
+        // std::cout << "access watchedBin with index " << toInt(p) << std::endl;
         vec <Watcher> &wbin = watchesBin[p];
         for(int k = 0; k < wbin.size(); k++) {
-
+            // std::cout << "c propagate bin " << k << "/" << wbin.size() << std::endl;
             Lit imp = wbin[k].blocker;
+            // std::cout << "c propagate bin imp: " << var(imp) << " " << sign(imp) << std::endl;
+            // std::cout << "value of imp: " << int(value(imp).value) << std::endl;
+            // std::cout << "value of l_Unfed: " << int(l_Undef.value) << std::endl;
 
             if(value(imp) == l_False) {
+                // std::cout << "c propagate conflict" << std::endl;
                 return wbin[k].cref;
             }
 
             if(value(imp) == l_Undef) {
+                // std::cout << "c propagate bin enqueue " << var(imp) << " " << sign(imp) << std::endl; 
                 uncheckedEnqueue(imp, wbin[k].cref);
+            }
+            else {
+                // std::cout << "c propagate bin already assigned" << std::endl;
             }
         }
 
