@@ -36,7 +36,8 @@ endif()
 
 include_directories(
         ${CMAKE_CURRENT_SOURCE_DIR}
-        ${ZLIB_INCLUDE_DIR})
+        ${ZLIB_INCLUDE_DIR}
+        ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
 
 link_libraries(${ZLIB_LIBRARY})
 
@@ -45,6 +46,9 @@ add_library(glucose ${lib_type} ${lib_srcs})
 # Cuda stuff
 #set_target_properties(main_simp PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set(CMAKE_CUDA_ARCHITECTURES 86)
+
+set_target_properties( glucose PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+set_target_properties( glucose PROPERTIES CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 set_target_properties( glucose PROPERTIES CUDA_ARCHITECTURES "86")
 
 add_executable(glucose-simp ${main_simp})

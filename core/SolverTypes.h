@@ -60,6 +60,7 @@ OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWA
 #include "mtl/Vec.h"
 #include "mtl/Map.h"
 #include "mtl/Alloc.h"
+#include <cuda_runtime.h>
 
 
 namespace Glucose {
@@ -118,6 +119,7 @@ const Lit lit_Error = { -1 };  // }
 #define l_Undef (Glucose::lbool((uint8_t)2))
 
 class lbool {
+    public:
     uint8_t value;
 
 public:
