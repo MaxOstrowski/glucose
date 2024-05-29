@@ -17,7 +17,7 @@ struct binWatchVector {
   Solver::Watcher* watches;
 };
 
-union watchVector {
+struct watchVector {
   unsigned int size;
   CRef* crefs;
 };
@@ -26,8 +26,8 @@ struct MySolver {
   unsigned int host_num_vars;
   unsigned int decision_level;
 
-  Lit* new_trail;
-  unsigned int* trail_size;
+  Lit* device_trail;
+  unsigned int* device_trail_size;
   Lit* host_trail;
   unsigned int host_trail_size;
   unsigned int* qhead;
@@ -43,6 +43,14 @@ struct MySolver {
   watchVector* hostWatches;
   watchVector* watches;
   uint32_t* ca;
+  /// storage for analyzing conflicts
+  Lit* device_conflict;
+  unsigned int* device_conflict_size;
+  Lit* host_conflict;
+  unsigned int host_conflict_size;
+  unsigned int* device_backtrack_level;
+  unsigned int host_backtrack_level; 
+
 };
 
 MySolver create_solver(Solver& solver);

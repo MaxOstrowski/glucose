@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.27)
 
 project(glucose LANGUAGES CXX CUDA)
+set( CMAKE_VERBOSE_MAKEFILE on )
 
 option(BUILD_SHARED_LIBS OFF "True for building shared object")
 
@@ -45,6 +46,7 @@ link_libraries(${ZLIB_LIBRARY})
 add_library(glucose ${lib_type} ${lib_srcs})
 # Cuda stuff
 #set_target_properties(main_simp PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+target_compile_options(glucose PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>)
 set(CMAKE_CUDA_ARCHITECTURES 86)
 
 set_target_properties( glucose PROPERTIES CUDA_SEPARABLE_COMPILATION ON)

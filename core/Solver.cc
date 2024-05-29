@@ -686,6 +686,12 @@ Lit Solver::pickBranchLit() {
 |        rest of literals. There may be others from the same level though.
 |
 |________________________________________________________________________________________________@*/
+// 1 move over conflicting clause
+// everything from old decision level is added to the conflict clause
+// everything on current decision level is replaced by its reason
+// same rules apply for reason, everything old is added, everything new is replaced
+// we all all this in backwards order of trail
+// stop condition unclear
 void Solver::analyze(CRef confl, vec <Lit> &out_learnt, vec <Lit> &selectors, int &out_btlevel, unsigned int &lbd, unsigned int &szWithoutSelectors) {
     int pathC = 0;
     Lit p = lit_Undef;
@@ -1498,6 +1504,7 @@ lbool Solver::search(int nof_conflicts) {
         num_prop += 1;
         if (num_prop%100 == 0){
             std::cout << "num_prop: " << num_prop << ", gpu_duration: " << gpu_duration/num_prop << ", cpu_duration: " << cpu_duration/num_prop << std::endl;
+            return l_False; // just for debugging
         }
 
         if(confl != CRef_Undef) {
