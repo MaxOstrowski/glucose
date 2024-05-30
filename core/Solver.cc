@@ -1504,7 +1504,7 @@ lbool Solver::search(int nof_conflicts) {
         num_prop += 1;
         if (num_prop%100 == 0){
             std::cout << "num_prop: " << num_prop << ", gpu_duration: " << gpu_duration/num_prop << ", cpu_duration: " << cpu_duration/num_prop << std::endl;
-            return l_False; // just for debugging
+            //return l_False; // just for debugging
         }
 
         if(confl != CRef_Undef) {

@@ -11,6 +11,7 @@ using namespace Glucose;
 
 __host__ int watch_index(Lit l) { return var(l) * 2 + int(sign(l)); }
 
+
 void copyConflictToHost(MySolver &solver);
 
 MySolver create_solver(Solver &solver)
@@ -286,6 +287,8 @@ __global__ void binary_propagation(
 
 __global__ void nary_propagation(
     unsigned int trail_p, unsigned int trail_max, Lit *new_trail, unsigned int* trail_size, AssignVardata *assigns_vardata, watchVector *watches, uint32_t *ca, const int decision_level, CRef *confl) {
+      Lit lit_Undef;
+      lit_Undef.x = -2;
   //printf("enter nary_propagation %d %d\n", trail_p, trail_max);
   while (trail_p < trail_max) {
     //printf("nary propagation %d\n", trail_p);
@@ -604,6 +607,8 @@ void propagate(MySolver &solver)
 // stop condition unclear
 __global__ void analyze(unsigned int nVars, CRef confl, Lit* trail, unsigned int trail_size, uint32_t *ca, const int decision_level, AssignVardata* assigns_vardata ,Lit* out_learnt, unsigned int* out_learnt_size, unsigned int* out_btlevel) {
     int pathC = 0;
+    Lit lit_Undef;
+    lit_Undef.x = -2;
     Lit p = lit_Undef;
     *out_learnt_size = 0;
     //printf("Analyze with trail size %d\n", trail_size);
