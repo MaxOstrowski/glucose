@@ -23,9 +23,9 @@ list(REMOVE_ITEM lib_srcs ${main_simp} ${main_parallel})
 
 message(${lib_srcs})
 
-# Parallel Library
-file(GLOB lib_parallel_srcs RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} parallel/*.cc)
-list(REMOVE_ITEM lib_parallel_srcs ${main_simp} ${main_parallel})
+# # Parallel Library
+# file(GLOB lib_parallel_srcs RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} parallel/*.cc)
+# list(REMOVE_ITEM lib_parallel_srcs ${main_simp} ${main_parallel})
 
 
 if(BUILD_SHARED_LIBS)
@@ -34,19 +34,21 @@ else()
     set(lib_type "STATIC")
 endif()
 
-
-include_directories(
-        ${CMAKE_CURRENT_SOURCE_DIR}
-        ${ZLIB_INCLUDE_DIR}
-        ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
-
 link_libraries(${ZLIB_LIBRARY})
 
 # base library
 add_library(glucose ${lib_type} ${lib_srcs})
 # Cuda stuff
-#set_target_properties(main_simp PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+
 target_compile_options(glucose PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>)
+message(STATUS "includes are first: ${CMAKE_CURRENT_SOURCE_DIR} second: ${ZLIB_INCLUDE_DIR} third ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}")
+target_include_directories(glucose PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(glucose PRIVATE ${ZLIB_INCLUDE_DIR})
+target_include_directories(glucose PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+#target_include_directories(glucose PRIVATE "/home/ostrowski/miniforge3/envs/gcc12/include")
+
+#add_compile_options("-I/home/ostrowski/miniforge3/envs/gcc12/include")
+
 set(CMAKE_CUDA_ARCHITECTURES 86)
 
 set_target_properties( glucose PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
@@ -54,6 +56,8 @@ set_target_properties( glucose PROPERTIES CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 set_target_properties( glucose PROPERTIES CUDA_ARCHITECTURES "86")
 
 add_executable(glucose-simp ${main_simp})
+target_include_directories(glucose-simp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(glucose-simp PRIVATE ${ZLIB_INCLUDE_DIR})
 target_link_libraries(glucose-simp glucose)
 
 # PARALLEL STUFF:
