@@ -42,7 +42,7 @@ target_include_directories(glucose PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 set(CMAKE_CUDA_ARCHITECTURES 86)
 
 #set_target_properties( glucose PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
-set_target_properties( glucose PROPERTIES CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+#set_target_properties( glucose PROPERTIES CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 set_target_properties( glucose PROPERTIES CUDA_ARCHITECTURES "86")
 
 add_executable(glucose-simp ${main_simp})

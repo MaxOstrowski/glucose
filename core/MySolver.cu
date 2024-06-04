@@ -197,6 +197,8 @@ __device__ void uncheckedEnqueue(Lit p, CRef cref, AssignVardata *assigns_vardat
   // << cref << std::endl;
   /// atomic increase trailsize
   int trail_p = atomicAdd(trail_size, 1);
+  //int trail_p = *trail_size;
+  //*trail_size = trail_p + 1;
   //printf("trail_p %d access\n", trail_p);
   new_trail[trail_p] = p;
   AssignVardata temp;
@@ -262,32 +264,32 @@ __device__ void binary_propagation(unsigned int tid, unsigned int bid, unsigned 
   for (unsigned int lit_access=trail_p+bid; lit_access < trail_max; lit_access+=gdim)
   //while (trail_p < trail_max)
   {
-    // printf("binary propagation %d\n", trail_p);
+    //printf("binary propagation %d\n", trail_p);
     Lit p = new_trail[lit_access];
-    // printf("binary propagation %d %d\n", var_device(p), sign_device(p));
-    // printf("watch binary clauses with index %d\n", watch_index_device(p));
+    //printf("binary propagation %d %d\n", var_device(p), sign_device(p));
+    //printf("watch binary clauses with index %d\n", watch_index_device(p));
     auto &wbin = watchesBin[watch_index_device(p)];
     for (int k = tid; k < wbin.size; k+=bdim)
     {
-      // printf("binary propagation wbin %d of %d\n", k, wbin.size);
+      //printf("binary propagation wbin %d of %d\n", k, wbin.size);
       Lit imp = wbin.watches[k].blocker;
-      // printf("binary propagation imp %d %d\n", var_device(imp), sign_device(imp));
-      // printf("binary propagation value %d\n", value_device(imp, assigns_vardata));
+      //printf("binary propagation imp %d %d\n", var_device(imp), sign_device(imp));
+      //printf("binary propagation value %d\n", value_device(imp, assigns_vardata));
       /// be careful, there was a hidden == operator that didnt compare for equality
       if (compare_lbool_device(value_device(imp, assigns_vardata), l_False_device))
       {
-        // printf("binary propagation conflict %d detected\n", wbin.watches[k].cref);
+        //printf("binary propagation conflict %d detected\n", wbin.watches[k].cref);
         *confl = wbin.watches[k].cref;
         return;
       }
       if (compare_lbool_device(value_device(imp, assigns_vardata), l_Undef_device))
       {
-        // printf("binary propagation enqueue %d %d\n", var_device(imp), sign_device(imp));
+        //printf("binary propagation enqueue %d %d\n", var_device(imp), sign_device(imp));
         uncheckedEnqueue(imp, wbin.watches[k].cref, assigns_vardata, new_trail, trail_size, decision_level);
       }
       else
       {
-        // printf("binary propagation else\n");
+        //printf("binary propagation else\n");
       }
     }
   }
@@ -332,10 +334,11 @@ __device__ void nary_propagation(unsigned int tid, unsigned int bid, unsigned in
       }
       /// all literals are false
       if (l == lit_Undef) {
+        //printf("nary propagation conflict %d\n", cref);
         *confl = cref;
         return;
       }
-
+      //printf("nary propagation enqueue %d %d\n", var_device(l), sign_device(l));
       uncheckedEnqueue(l, cref, assigns_vardata, new_trail, trail_size, decision_level);
 
     Continue:;
@@ -367,16 +370,16 @@ void copyConflictToHost(MySolver &solver)
 
 void copyTrailToHost(MySolver &solver)
 {
-  gpuErrchk(cudaMemcpy(solver.host_trail, solver.device_trail, sizeof(Lit)*solver.host_num_vars, cudaMemcpyDeviceToHost));
+  gpuErrchk(cudaMemcpy(solver.host_trail, solver.device_trail, sizeof(Lit)*solver.host_num_vars, cudaMemcpyDeviceToHost)); // can be optimized
   gpuErrchk(cudaMemcpy(&solver.host_trail_size, solver.device_trail_size, sizeof(unsigned int), cudaMemcpyDeviceToHost));
 }
 
-void compare(MySolver &solver, Solver& s, CRef confl)
+void compare(MySolver &mysolver, Solver& s, CRef confl)
 {
-  copyConflictToHost(solver);
-  copyTrailToHost(solver);
+  copyConflictToHost(mysolver);
+  copyTrailToHost(mysolver);
   /// either both are in conflict or both are not in conflict
-  if (*solver.confl_host == CRef_Undef && confl == CRef_Undef)
+  if (*mysolver.confl_host == CRef_Undef && confl == CRef_Undef)
   {
     // both trails are the same (set comparison)
     // print host trail and trail
@@ -388,29 +391,32 @@ void compare(MySolver &solver, Solver& s, CRef confl)
     // {
     //   std::cout << "trail " << i << " " << toInt(s.trail[i]) << std::endl;
     // }
-    std::set<Lit> myset(solver.host_trail, solver.host_trail + solver.host_trail_size);
+    std::set<Lit> myset(mysolver.host_trail, mysolver.host_trail + mysolver.host_trail_size);
     std::set<Lit> theirset(s.trail.data, s.trail.data + s.trail.size());
-    assert (myset == theirset);
+    
     // write relation between the two sets
-    // std::cout << "host trail size " << solver.host_trail_size << " trail size " << s.trail.size() << std::endl;
+    // std::cout << "my trail size " << mysolver.host_trail_size << " and their trail size " << s.trail.size() << std::endl;
     // std::cout << "sizes: " << myset.size() << "/" << theirset.size() << std::endl;
-    // if myset is a subset of theirset
     // if (std::includes(theirset.begin(), theirset.end(), myset.begin(), myset.end()))
     // {
-    //   // std::cout << "my set is a subset of theirs" << std::endl;
-    //   return;
+    //   std::cout << "my set is a subset of theirs" << std::endl;
+    //   //return;
     // }
     // // if theirset is a subset of myset
     // if (std::includes(myset.begin(), myset.end(), theirset.begin(), theirset.end()))
     // {
     //   std::cout << "theirset is a subset of myset" << std::endl;
-    //   return;
+    //   //return;
     // }
-    // std::cout << "trails complte different" << std::endl;
+    // if (myset != theirset)
+    //   std::cout << "trails complte different" << std::endl;
+    
+
+    assert (myset == theirset);
     return;
   }
 
-  if (*solver.confl_host == confl) {
+  if (*mysolver.confl_host == confl) {
     // compare analyzed conflicts
     //std::cout << "conflict is the same" << std::endl;
   } else {
@@ -421,7 +427,7 @@ void compare(MySolver &solver, Solver& s, CRef confl)
   //   // std::cout << "they have conflict, fine" << std::endl;
   //   return;
   // }
-  assert (*solver.confl_host != CRef_Undef && confl != CRef_Undef);
+  assert (*mysolver.confl_host != CRef_Undef && confl != CRef_Undef);
   //std::cout << "PROBLEM: I have a conflict, they not" << std::endl;
 }
 
@@ -496,10 +502,11 @@ __global__ void propagate_control2(MySolver solver) {
   while(true) {
 
     //printf("start while loop %d %d\n", bid, tid);
-    if (bid < gdim/2)
-      binary_propagation(tid, bid, bdim, gdim, qhead, trail_max, solver.device_trail, solver.device_trail_size, solver.assigns_vardata, solver.watchesBin, solver.decision_level, solver.confl_device);
+    const int divide=2;
+    if (bid < gdim/divide)
+      binary_propagation(tid, bid, bdim, gdim/divide, qhead, trail_max, solver.device_trail, solver.device_trail_size, solver.assigns_vardata, solver.watchesBin, solver.decision_level, solver.confl_device);
     else
-      nary_propagation(tid, bid, bdim, gdim, qhead, trail_max, solver.device_trail, solver.device_trail_size, solver.assigns_vardata, solver.watches, solver.ca, solver.decision_level, solver.confl_device);
+      nary_propagation(tid, bid-gdim/divide, bdim, gdim/divide, qhead, trail_max, solver.device_trail, solver.device_trail_size, solver.assigns_vardata, solver.watches, solver.ca, solver.decision_level, solver.confl_device);
 
     //printf("Block/Thread %d %d ready to sync\n", bid, tid);
     g.sync();
@@ -546,7 +553,7 @@ void propagate(MySolver &solver)
   ++num;
 
   void *kernelArgs[] = {&solver};
-  cudaLaunchCooperativeKernel((void*)&propagate_control2, 6, 32, kernelArgs,  solver.host_num_vars * sizeof(bool), 0);
+  cudaLaunchCooperativeKernel((void*)&propagate_control2, 12, 64, kernelArgs,  solver.host_num_vars * sizeof(bool), 0);
   //empty_test<<<1, 1>>>();
 
   gpuErrchk( cudaPeekAtLastError() );
