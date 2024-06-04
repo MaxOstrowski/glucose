@@ -6,6 +6,7 @@
 #include <iostream>
 #include <set>
 #include <vector>
+#include <cooperative_groups.h>
 
 using namespace Glucose;
 
@@ -196,6 +197,7 @@ __device__ void uncheckedEnqueue(Lit p, CRef cref, AssignVardata *assigns_vardat
   // << cref << std::endl;
   /// atomic increase trailsize
   int trail_p = atomicAdd(trail_size, 1);
+  //printf("trail_p %d access\n", trail_p);
   new_trail[trail_p] = p;
   AssignVardata temp;
   temp.assign = create_bool_device_from_bool(!sign_device(p));
@@ -245,20 +247,27 @@ void destroy_solver(MySolver &solver)
 }
 
 
-__global__ void analyze(unsigned int nVars, CRef confl, Lit* trail, unsigned int trail_size, uint32_t *ca, const int decision_level, AssignVardata* assigns_vardata ,Lit* out_learnt, unsigned int* out_learnt_size, unsigned int* out_btlevel);
+__device__ void analyze(bool* seen, unsigned int nVars, CRef confl, Lit* trail, unsigned int trail_size, uint32_t *ca, const int decision_level, AssignVardata* assigns_vardata ,Lit* out_learnt, unsigned int* out_learnt_size, unsigned int* out_btlevel);
 
-__global__ void binary_propagation(
+__device__ void binary_propagation(unsigned int tid, unsigned int bid, unsigned int bdim, unsigned int gdim,
     unsigned int trail_p, int trail_max, Lit *new_trail, unsigned int *trail_size, AssignVardata *assigns_vardata, binWatchVector *watchesBin, const int decision_level, CRef *confl)
 {
+  // collect thread and block id and sizes
+  // unsigned int tid = threadIdx.x;
+  // unsigned int bid = blockIdx.x;
+  // unsigned int bdim = blockDim.x;
+  // unsigned int gdim = gridDim.x;
+
   //printf("enter binary_propagation %d %d %d\n", trail_p, *trail_size, trail_max);
-  while (trail_p < trail_max)
+  for (unsigned int lit_access=trail_p+bid; lit_access < trail_max; lit_access+=gdim)
+  //while (trail_p < trail_max)
   {
     // printf("binary propagation %d\n", trail_p);
-    Lit p = new_trail[trail_p++];
+    Lit p = new_trail[lit_access];
     // printf("binary propagation %d %d\n", var_device(p), sign_device(p));
     // printf("watch binary clauses with index %d\n", watch_index_device(p));
     auto &wbin = watchesBin[watch_index_device(p)];
-    for (int k = 0; k < wbin.size; k++)
+    for (int k = tid; k < wbin.size; k+=bdim)
     {
       // printf("binary propagation wbin %d of %d\n", k, wbin.size);
       Lit imp = wbin.watches[k].blocker;
@@ -285,18 +294,24 @@ __global__ void binary_propagation(
 }
 
 
-__global__ void nary_propagation(
+__device__ void nary_propagation(unsigned int tid, unsigned int bid, unsigned int bdim, unsigned int gdim,
     unsigned int trail_p, unsigned int trail_max, Lit *new_trail, unsigned int* trail_size, AssignVardata *assigns_vardata, watchVector *watches, uint32_t *ca, const int decision_level, CRef *confl) {
-      Lit lit_Undef;
-      lit_Undef.x = -2;
+  Lit lit_Undef;
+  lit_Undef.x = -2;
+
+  // unsigned int tid = threadIdx.x;
+  // unsigned int bid = blockIdx.x;
+  // unsigned int bdim = blockDim.x;
+  // unsigned int gdim = gridDim.x;
   //printf("enter nary_propagation %d %d\n", trail_p, trail_max);
-  while (trail_p < trail_max) {
+  for (unsigned int lit_access=trail_p+bid; lit_access < trail_max; lit_access+=gdim) {
+  //while (trail_p < trail_max) {
     //printf("nary propagation %d\n", trail_p);
-    Lit p = new_trail[trail_p++];
+    Lit p = new_trail[lit_access];
     //printf("nary propagation lit p %d %d\n", var_device(p), sign_device(p));
     watchVector &wnary = watches[watch_index_device(p)];
     //printf("accessed wnary with index %u \n", watch_index_device(p));
-    for (int k = 0; k < wnary.size; k++) {
+    for (int k = tid; k < wnary.size; k+=bdim) {
       //printf("nary propagation wnary access %d of %u\n", k, wnary.size);
       CRef cref = wnary.crefs[k];
       //printf("nary propagation cref %d\n", cref);
@@ -328,10 +343,13 @@ __global__ void nary_propagation(
   }
 }
 
-__global__ void valid_propagation(
+__device__ void valid_propagation(unsigned int tid, unsigned int bdim,
     unsigned int trail_p, int trail_max, Lit *new_trail, AssignVardata *assigns_vardata, CRef *confl) {
-  while (trail_p < trail_max) {
-    Lit p = new_trail[trail_p++];
+  // unsigned int tid = threadIdx.x;
+  // unsigned int bdim = blockDim.x;
+  for (unsigned int lit_access=trail_p+tid; lit_access < trail_max; lit_access+=bdim) {
+  //while (trail_p < trail_max) {
+    Lit p = new_trail[lit_access];
     if (compare_lbool_device(value_device(p, assigns_vardata), l_False_device)) {
       *confl = assigns_vardata[var_device(p)].vardata.reason;
       return;
@@ -409,48 +427,117 @@ void compare(MySolver &solver, Solver& s, CRef confl)
 
 __global__ void propagate_control(MySolver solver);
 
-__global__ void propagate_end(MySolver solver, unsigned int trail_max) {
-  //printf("propagate end with previous qhead %d and new %d and confl %d \n", *solver.qhead, trail_max, *solver.confl_device);
-  *solver.qhead = trail_max;
-  //printf("propagate end with device_trail_size %d\n", *solver.device_trail_size);
-  /// print trail with respective decision levels
-  for (int i = 0; i < *solver.device_trail_size; i++) {
-    //printf("trail %d %d with level %d\n", var_device(solver.device_trail[i]), sign_device(solver.device_trail[i]), level_device(var_device(solver.device_trail[i]), solver.assigns_vardata));
-  }
-  if (*solver.confl_device != CRef_Undef)
-  {
-    if (solver.decision_level == 0)
-    {
-      // conflict on dl 0
-      return;
-    }
-    analyze<<<1, 1, solver.host_num_vars * sizeof(bool)>>>(solver.host_num_vars, *solver.confl_device, solver.device_trail, *solver.device_trail_size, solver.ca, solver.decision_level, solver.assigns_vardata, solver.device_conflict, solver.device_conflict_size, solver.device_backtrack_level);
-    return;
-  }
-  else if (*solver.device_trail_size > trail_max)
-  {
-    //printf("continue propagation\n");
-    propagate_control<<<1, 1, 0, cudaStreamTailLaunch>>>(solver);
-  }
-}
+// __global__ void propagate_end(MySolver solver, unsigned int trail_max) {
+//   //printf("propagate end with previous qhead %d and new %d and confl %d \n", *solver.qhead, trail_max, *solver.confl_device);
+//   *solver.qhead = trail_max;
+//   //printf("propagate end with device_trail_size %d\n", *solver.device_trail_size);
+//   /// print trail with respective decision levels
+//   for (int i = 0; i < *solver.device_trail_size; i++) {
+//     //printf("trail %d %d with level %d\n", var_device(solver.device_trail[i]), sign_device(solver.device_trail[i]), level_device(var_device(solver.device_trail[i]), solver.assigns_vardata));
+//   }
+//   if (*solver.confl_device != CRef_Undef)
+//   {
+//     if (solver.decision_level == 0)
+//     {
+//       // conflict on dl 0
+//       return;
+//     }
+//     analyze<<<1, 1, solver.host_num_vars * sizeof(bool), cudaStreamTailLaunch>>>(solver.host_num_vars, *solver.confl_device, solver.device_trail, *solver.device_trail_size, solver.ca, solver.decision_level, solver.assigns_vardata, solver.device_conflict, solver.device_conflict_size, solver.device_backtrack_level);
+//     return;
+//   }
+//   else if (*solver.device_trail_size > trail_max)
+//   {
+//     //printf("continue propagation\n");
+//     propagate_control<<<1, 1, 0, cudaStreamTailLaunch>>>(solver);
+//   }
+// }
 
-__global__ void propagate_control(MySolver solver) {
-  // assert only 1 thread and 1 block running
-  /// TODO
+// __global__ void propagate_control(MySolver solver) {
+//   // assert only 1 thread and 1 block running
+//   /// TODO
+
+//   unsigned int trail_max = *solver.device_trail_size;
+//   unsigned int qhead = *solver.qhead;
+//   //printf("propagate control on decision level %d with qhead %d and trail_max %d\n", solver.decision_level, qhead, trail_max);
+//   /// print trail with respective decision levels
+//   //for (int i = 0; i < *solver.device_trail_size; i++) {
+//     //printf("trail %d %d with level %d\n", var_device(solver.device_trail[i]), sign_device(solver.device_trail[i]), level_device(var_device(solver.device_trail[i]), solver.assigns_vardata));
+//   //}
+  
+//   binary_propagation<<<8, 32, 0, cudaStreamFireAndForget>>>(qhead, trail_max, solver.device_trail, solver.device_trail_size, solver.assigns_vardata, solver.watchesBin, solver.decision_level, solver.confl_device);
+//   nary_propagation<<<8, 32, 0, cudaStreamFireAndForget>>>(qhead, trail_max, solver.device_trail, solver.device_trail_size, solver.assigns_vardata, solver.watches, solver.ca, solver.decision_level, solver.confl_device);
+//   valid_propagation<<<1, 32, 0, cudaStreamTailLaunch>>>(qhead, trail_max, solver.device_trail, solver.assigns_vardata, solver.confl_device);
+//   propagate_end<<<1, 1, 0, cudaStreamTailLaunch>>>(solver, trail_max);
+// }
+
+
+__global__ void propagate_control2(MySolver solver) {
+  unsigned int tid = threadIdx.x;
+  unsigned int bid = blockIdx.x;
+  unsigned int bdim = blockDim.x;
+  unsigned int gdim = gridDim.x;
+  extern __shared__ bool seen[]; 
+  cooperative_groups::grid_group g = cooperative_groups::this_grid(); 
+  //printf("Enter control2 %d %d\n", tid, bid);
+  // printf("I can synchronize: %d\n", g.is_valid());
+  // cudaError_t t = cudaPeekAtLastError();
+  // printf("GPUassert: %s\n", cudaGetErrorString(t));
+  // g.sync();
+  // t = cudaPeekAtLastError();
+  // printf("GPUassert: %s\n", cudaGetErrorString(t));
 
   unsigned int trail_max = *solver.device_trail_size;
   unsigned int qhead = *solver.qhead;
   //printf("propagate control on decision level %d with qhead %d and trail_max %d\n", solver.decision_level, qhead, trail_max);
   /// print trail with respective decision levels
-  for (int i = 0; i < *solver.device_trail_size; i++) {
+  //for (int i = 0; i < *solver.device_trail_size; i++) {
     //printf("trail %d %d with level %d\n", var_device(solver.device_trail[i]), sign_device(solver.device_trail[i]), level_device(var_device(solver.device_trail[i]), solver.assigns_vardata));
+  //}
+  while(true) {
+
+    //printf("start while loop %d %d\n", bid, tid);
+    if (bid < gdim/2)
+      binary_propagation(tid, bid, bdim, gdim, qhead, trail_max, solver.device_trail, solver.device_trail_size, solver.assigns_vardata, solver.watchesBin, solver.decision_level, solver.confl_device);
+    else
+      nary_propagation(tid, bid, bdim, gdim, qhead, trail_max, solver.device_trail, solver.device_trail_size, solver.assigns_vardata, solver.watches, solver.ca, solver.decision_level, solver.confl_device);
+
+    //printf("Block/Thread %d %d ready to sync\n", bid, tid);
+    g.sync();
+
+    if (bid == 0) {
+      valid_propagation(tid, bdim, qhead, trail_max, solver.device_trail, solver.assigns_vardata, solver.confl_device);
+    }
+    g.sync();
+    //*solver.qhead = trail_max;
+    //printf("propagate end with device_trail_size %d\n", *solver.device_trail_size);
+    /// print trail with respective decision levels
+    // for (int i = 0; i < *solver.device_trail_size; i++) {
+    //   //printf("trail %d %d with level %d\n", var_device(solver.device_trail[i]), sign_device(solver.device_trail[i]), level_device(var_device(solver.device_trail[i]), solver.assigns_vardata));
+    // }
+    if (*solver.confl_device != CRef_Undef)
+    {
+      //printf("conflict: %d\n", *solver.confl_device);
+      if (bid == 0 && tid == 0)
+      {
+        if (solver.decision_level > 0)
+          analyze(seen, solver.host_num_vars, *solver.confl_device, solver.device_trail, *solver.device_trail_size, solver.ca, solver.decision_level, solver.assigns_vardata, solver.device_conflict, solver.device_conflict_size, solver.device_backtrack_level);
+      }
+      return;
+    }
+    
+    if (*solver.device_trail_size <= trail_max)
+    {
+      //printf("reached fixpoint\n");
+      return;
+    }
+    else {
+      qhead = trail_max;
+      trail_max = *solver.device_trail_size;
+      //printf("continue propagation with trail size %d/%d\n", qhead, trail_max);
+    }
   }
-  
-  binary_propagation<<<1, 1, 0, cudaStreamFireAndForget>>>(qhead, trail_max, solver.device_trail, solver.device_trail_size, solver.assigns_vardata, solver.watchesBin, solver.decision_level, solver.confl_device);
-  nary_propagation<<<1, 1, 0, cudaStreamFireAndForget>>>(qhead, trail_max, solver.device_trail, solver.device_trail_size, solver.assigns_vardata, solver.watches, solver.ca, solver.decision_level, solver.confl_device);
-  valid_propagation<<<1, 1, 0, cudaStreamTailLaunch>>>(qhead, trail_max, solver.device_trail, solver.assigns_vardata, solver.confl_device);
-  propagate_end<<<1, 1, 0, cudaStreamTailLaunch>>>(solver, trail_max);
 }
+
 
 void propagate(MySolver &solver)
 {
@@ -458,7 +545,9 @@ void propagate(MySolver &solver)
   // std::cout << "propagate " << num << std::endl;
   ++num;
 
-  propagate_control<<<1, 1>>>(solver);
+  void *kernelArgs[] = {&solver};
+  cudaLaunchCooperativeKernel((void*)&propagate_control2, 6, 32, kernelArgs,  solver.host_num_vars * sizeof(bool), 0);
+  //empty_test<<<1, 1>>>();
 
   gpuErrchk( cudaPeekAtLastError() );
   gpuErrchk(cudaDeviceSynchronize());
@@ -605,7 +694,7 @@ void propagate(MySolver &solver)
 // same rules apply for reason, everything old is added, everything new is replaced
 // we all all this in backwards order of trail
 // stop condition unclear
-__global__ void analyze(unsigned int nVars, CRef confl, Lit* trail, unsigned int trail_size, uint32_t *ca, const int decision_level, AssignVardata* assigns_vardata ,Lit* out_learnt, unsigned int* out_learnt_size, unsigned int* out_btlevel) {
+__device__ void analyze(bool* seen, unsigned int nVars, CRef confl, Lit* trail, unsigned int trail_size, uint32_t *ca, const int decision_level, AssignVardata* assigns_vardata ,Lit* out_learnt, unsigned int* out_learnt_size, unsigned int* out_btlevel) {
     int pathC = 0;
     Lit lit_Undef;
     lit_Undef.x = -2;
@@ -617,7 +706,7 @@ __global__ void analyze(unsigned int nVars, CRef confl, Lit* trail, unsigned int
     }
 
     /// create shared memory for seen variables in size of variables
-    extern __shared__ bool seen[]; /// initialize correctly with nvars*sizeof(bool)
+    /// initialize correctly with nvars*sizeof(bool)
     for (unsigned int i = 0; i < nVars; ++i) {
       //printf("Accessing shared memory\n");
       seen[i] = false;

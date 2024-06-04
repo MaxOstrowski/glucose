@@ -27,7 +27,7 @@ OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWA
 
 #include "mtl/IntTypes.h"
 #include "mtl/Vec.h"
-#include "utils/ParseUtils.h"
+//#include "utils/ParseUtils.h"
 
 namespace Glucose {
 
@@ -134,29 +134,7 @@ class DoubleOption : public Option
     operator      double&  (void)       { return value; }
     DoubleOption& operator=(double x)   { value = x; return *this; }
 
-    virtual bool parse(const char* str){
-        const char* span = str; 
-
-        if (!match(span, "-") || !match(span, name) || !match(span, "="))
-            return false;
-
-        char*  end;
-        double tmp = strtod(span, &end);
-
-        if (end == NULL) 
-            return false;
-        else if (tmp >= range.end && (!range.end_inclusive || tmp != range.end)){
-            fprintf(stderr, "ERROR! value <%s> is too large for option \"%s\".\n", span, name);
-            exit(1);
-        }else if (tmp <= range.begin && (!range.begin_inclusive || tmp != range.begin)){
-            fprintf(stderr, "ERROR! value <%s> is too small for option \"%s\".\n", span, name);
-            exit(1); }
-
-        value = tmp;
-        // fprintf(stderr, "READ VALUE: %g\n", value);
-
-        return true;
-    }
+    virtual bool parse(const char* str);
 
     virtual void help (bool verbose = false){
         fprintf(stderr, "  -%-12s = %-8s %c%4.2g .. %4.2g%c (default: %g)\n", 
@@ -192,28 +170,7 @@ class IntOption : public Option
     operator   int32_t&  (void)       { return value; }
     IntOption& operator= (int32_t x)  { value = x; return *this; }
 
-    virtual bool parse(const char* str){
-        const char* span = str; 
-
-        if (!match(span, "-") || !match(span, name) || !match(span, "="))
-            return false;
-
-        char*   end;
-        int32_t tmp = strtol(span, &end, 10);
-
-        if (end == NULL) 
-            return false;
-        else if (tmp > range.end){
-            fprintf(stderr, "ERROR! value <%s> is too large for option \"%s\".\n", span, name);
-            exit(1);
-        }else if (tmp < range.begin){
-            fprintf(stderr, "ERROR! value <%s> is too small for option \"%s\".\n", span, name);
-            exit(1); }
-
-        value = tmp;
-
-        return true;
-    }
+    virtual bool parse(const char* str);
 
     virtual void help (bool verbose = false){
         fprintf(stderr, "  -%-12s = %-8s [", name, type_name);
@@ -254,28 +211,7 @@ class Int64Option : public Option
     operator     int64_t&  (void)       { return value; }
     Int64Option& operator= (int64_t x)  { value = x; return *this; }
 
-    virtual bool parse(const char* str){
-        const char* span = str; 
-
-        if (!match(span, "-") || !match(span, name) || !match(span, "="))
-            return false;
-
-        char*   end;
-        int64_t tmp = strtoll(span, &end, 10);
-
-        if (end == NULL) 
-            return false;
-        else if (tmp > range.end){
-            fprintf(stderr, "ERROR! value <%s> is too large for option \"%s\".\n", span, name);
-            exit(1);
-        }else if (tmp < range.begin){
-            fprintf(stderr, "ERROR! value <%s> is too small for option \"%s\".\n", span, name);
-            exit(1); }
-
-        value = tmp;
-
-        return true;
-    }
+    virtual bool parse(const char* str);
 
     virtual void help (bool verbose = false){
         fprintf(stderr, "  -%-12s = %-8s [", name, type_name);
@@ -314,15 +250,7 @@ class StringOption : public Option
     operator      const char*& (void)           { return value; }
     StringOption& operator=    (const char* x)  { value = x; return *this; }
 
-    virtual bool parse(const char* str){
-        const char* span = str; 
-
-        if (!match(span, "-") || !match(span, name) || !match(span, "="))
-            return false;
-
-        value = span;
-        return true;
-    }
+    virtual bool parse(const char* str);
 
     virtual void help (bool verbose = false){
         fprintf(stderr, "  -%-10s = %8s\n", name, type_name);
@@ -350,19 +278,7 @@ class BoolOption : public Option
     operator    bool&    (void)       { return value; }
     BoolOption& operator=(bool b)     { value = b; return *this; }
 
-    virtual bool parse(const char* str){
-        const char* span = str; 
-        
-        if (match(span, "-")){
-            bool b = !match(span, "no-");
-
-            if (strcmp(span, name) == 0){
-                value = b;
-                return true; }
-        }
-
-        return false;
-    }
+    virtual bool parse(const char* str);
 
     virtual void help (bool verbose = false){
 

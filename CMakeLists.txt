@@ -5,14 +5,12 @@ set( CMAKE_VERBOSE_MAKEFILE on )
 
 option(BUILD_SHARED_LIBS OFF "True for building shared object")
 
-set(CMAKE_CXX_FLAGS "-std=c++11")
-
 # Dependencies {{{
 find_package(ZLIB REQUIRED)
 find_package(Threads REQUIRED)
 # }}}
 
-set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD 14)
 set(main_simp "simp/Main.cc")
 set(main_parallel "parallel/Main.cc")
 
@@ -23,10 +21,6 @@ list(REMOVE_ITEM lib_srcs ${main_simp} ${main_parallel})
 
 message(${lib_srcs})
 
-# # Parallel Library
-# file(GLOB lib_parallel_srcs RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} parallel/*.cc)
-# list(REMOVE_ITEM lib_parallel_srcs ${main_simp} ${main_parallel})
-
 
 if(BUILD_SHARED_LIBS)
     set(lib_type "SHARED")
@@ -34,33 +28,23 @@ else()
     set(lib_type "STATIC")
 endif()
 
-link_libraries(${ZLIB_LIBRARY})
+#link_libraries(${ZLIB_LIBRARY})
 
 # base library
 add_library(glucose ${lib_type} ${lib_srcs})
 # Cuda stuff
 
 target_compile_options(glucose PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>)
-message(STATUS "includes are first: ${CMAKE_CURRENT_SOURCE_DIR} second: ${ZLIB_INCLUDE_DIR} third ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}")
-target_include_directories(glucose PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_include_directories(glucose PRIVATE ${ZLIB_INCLUDE_DIR})
-target_include_directories(glucose PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+target_include_directories(glucose PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+#target_include_directories(glucose PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
 #target_include_directories(glucose PRIVATE "/home/ostrowski/miniforge3/envs/gcc12/include")
-
-#add_compile_options("-I/home/ostrowski/miniforge3/envs/gcc12/include")
 
 set(CMAKE_CUDA_ARCHITECTURES 86)
 
-set_target_properties( glucose PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+#set_target_properties( glucose PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 set_target_properties( glucose PROPERTIES CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 set_target_properties( glucose PROPERTIES CUDA_ARCHITECTURES "86")
 
 add_executable(glucose-simp ${main_simp})
-target_include_directories(glucose-simp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_include_directories(glucose-simp PRIVATE ${ZLIB_INCLUDE_DIR})
-target_link_libraries(glucose-simp glucose)
-
-# PARALLEL STUFF:
-# add_library(glucosep ${lib_type} ${lib_srcs} ${lib_parallel_srcs})
-# add_executable(glucose-syrup ${main_parallel})
-# target_link_libraries(glucose-syrup glucosep ${CMAKE_THREAD_LIBS_INIT})
+target_include_directories(glucose-simp PUBLIC ${ZLIB_INCLUDE_DIR})
+target_link_libraries(glucose-simp PUBLIC ${ZLIB_LIBRARY} glucose)
