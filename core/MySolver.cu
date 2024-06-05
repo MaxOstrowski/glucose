@@ -346,11 +346,11 @@ __device__ void nary_propagation(unsigned int tid, unsigned int bid, unsigned in
   }
 }
 
-__device__ void valid_propagation(unsigned int tid, unsigned int bdim,
+__device__ void valid_propagation(unsigned int tid, unsigned int bid, unsigned int bdim, unsigned int gdim,
     unsigned int trail_p, int trail_max, Lit *new_trail, AssignVardata *assigns_vardata, CRef *confl) {
   // unsigned int tid = threadIdx.x;
   // unsigned int bdim = blockDim.x;
-  for (unsigned int lit_access=trail_p+tid; lit_access < trail_max; lit_access+=bdim) {
+  for (unsigned int lit_access=trail_p+tid+bid*bdim; lit_access < trail_max; lit_access+=bdim) {
   //while (trail_p < trail_max) {
     Lit p = new_trail[lit_access];
     if (compare_lbool_device(value_device(p, assigns_vardata), l_False_device)) {
@@ -482,7 +482,7 @@ __global__ void propagate_control2(MySolver solver) {
   unsigned int bid = blockIdx.x;
   unsigned int bdim = blockDim.x;
   unsigned int gdim = gridDim.x;
-  extern __shared__ bool seen[]; 
+  //extern __shared__ bool seen[]; 
   cooperative_groups::grid_group g = cooperative_groups::this_grid(); 
   //printf("Enter control2 %d %d\n", tid, bid);
   // printf("I can synchronize: %d\n", g.is_valid());
@@ -511,9 +511,8 @@ __global__ void propagate_control2(MySolver solver) {
     //printf("Block/Thread %d %d ready to sync\n", bid, tid);
     g.sync();
 
-    if (bid == 0) {
-      valid_propagation(tid, bdim, qhead, trail_max, solver.device_trail, solver.assigns_vardata, solver.confl_device);
-    }
+    valid_propagation(tid, bid, bdim, gdim, qhead, trail_max, solver.device_trail, solver.assigns_vardata, solver.confl_device);
+    
     g.sync();
     //*solver.qhead = trail_max;
     //printf("propagate end with device_trail_size %d\n", *solver.device_trail_size);
@@ -524,11 +523,11 @@ __global__ void propagate_control2(MySolver solver) {
     if (*solver.confl_device != CRef_Undef)
     {
       //printf("conflict: %d\n", *solver.confl_device);
-      if (bid == 0 && tid == 0)
-      {
-        if (solver.decision_level > 0)
-          analyze(seen, solver.host_num_vars, *solver.confl_device, solver.device_trail, *solver.device_trail_size, solver.ca, solver.decision_level, solver.assigns_vardata, solver.device_conflict, solver.device_conflict_size, solver.device_backtrack_level);
-      }
+      // if (bid == 0 && tid == 0)
+      // {
+      //   if (solver.decision_level > 0)
+      //     analyze(seen, solver.host_num_vars, *solver.confl_device, solver.device_trail, *solver.device_trail_size, solver.ca, solver.decision_level, solver.assigns_vardata, solver.device_conflict, solver.device_conflict_size, solver.device_backtrack_level);
+      // }
       return;
     }
     
@@ -553,7 +552,7 @@ void propagate(MySolver &solver)
   ++num;
 
   void *kernelArgs[] = {&solver};
-  cudaLaunchCooperativeKernel((void*)&propagate_control2, 12, 64, kernelArgs,  solver.host_num_vars * sizeof(bool), 0);
+  cudaLaunchCooperativeKernel((void*)&propagate_control2, 12, 64, kernelArgs,  0/*solver.host_num_vars * sizeof(bool)*/, 0);
   //empty_test<<<1, 1>>>();
 
   gpuErrchk( cudaPeekAtLastError() );
