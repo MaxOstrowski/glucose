@@ -248,6 +248,13 @@ void destroy_solver(MySolver &solver)
     delete[] solver.host_conflict;
 }
 
+__device__ bool isExactlyOneBitSet(uint32_t n) {
+    return n && !(n & (n - 1));
+}
+
+__device__ int getSetBitPosition(uint32_t n) {
+    return __ffs(n);
+}
 
 __device__ void analyze(bool* seen, unsigned int nVars, CRef confl, Lit* trail, unsigned int trail_size, uint32_t *ca, const int decision_level, AssignVardata* assigns_vardata ,Lit* out_learnt, unsigned int* out_learnt_size, unsigned int* out_btlevel);
 
@@ -509,9 +516,7 @@ __global__ void propagate_control2(MySolver solver) {
       nary_propagation(tid, bid-gdim/divide, bdim, gdim/divide, qhead, trail_max, solver.device_trail, solver.device_trail_size, solver.assigns_vardata, solver.watches, solver.ca, solver.decision_level, solver.confl_device);
 
     //printf("Block/Thread %d %d ready to sync\n", bid, tid);
-    g.sync();
-
-    valid_propagation(tid, bid, bdim, gdim, qhead, trail_max, solver.device_trail, solver.assigns_vardata, solver.confl_device);
+    
     
     g.sync();
     //*solver.qhead = trail_max;
@@ -534,6 +539,9 @@ __global__ void propagate_control2(MySolver solver) {
     if (*solver.device_trail_size <= trail_max)
     {
       //printf("reached fixpoint\n");
+      //g.sync();
+
+      valid_propagation(tid, bid, bdim, gdim, qhead, *solver.device_trail_size, solver.device_trail, solver.assigns_vardata, solver.confl_device);
       return;
     }
     else {
