@@ -268,6 +268,10 @@ __device__ void binary_propagation(unsigned int tid, unsigned int bid, unsigned 
   // unsigned int gdim = gridDim.x;
 
   //printf("enter binary_propagation %d %d %d\n", trail_p, *trail_size, trail_max);
+  if (bid == 0 and tid == 0)
+  {
+    //printf("binary propagation with %d blocks and %d threads doing %d literals\n", gdim, bdim, trail_max-trail_p);
+  }
   for (unsigned int lit_access=trail_p+bid; lit_access < trail_max; lit_access+=gdim)
   //while (trail_p < trail_max)
   {
@@ -276,6 +280,10 @@ __device__ void binary_propagation(unsigned int tid, unsigned int bid, unsigned 
     //printf("binary propagation %d %d\n", var_device(p), sign_device(p));
     //printf("watch binary clauses with index %d\n", watch_index_device(p));
     auto &wbin = watchesBin[watch_index_device(p)];
+    if (tid == 0)
+    {
+      //printf("binary propagating literal with %d binary clauses\n", wbin.size);
+    }
     for (int k = tid; k < wbin.size; k+=bdim)
     {
       //printf("binary propagation wbin %d of %d\n", k, wbin.size);
@@ -287,7 +295,7 @@ __device__ void binary_propagation(unsigned int tid, unsigned int bid, unsigned 
       {
         //printf("binary propagation conflict %d detected\n", wbin.watches[k].cref);
         *confl = wbin.watches[k].cref;
-        return;
+        //return;
       }
       if (compare_lbool_device(value_device(imp, assigns_vardata), l_Undef_device))
       {
@@ -302,17 +310,30 @@ __device__ void binary_propagation(unsigned int tid, unsigned int bid, unsigned 
   }
 }
 
-
+template <unsigned int NUM_WARPS>
 __device__ void nary_propagation(unsigned int tid, unsigned int bid, unsigned int bdim, unsigned int gdim,
     unsigned int trail_p, unsigned int trail_max, Lit *new_trail, unsigned int* trail_size, AssignVardata *assigns_vardata, watchVector *watches, uint32_t *ca, const int decision_level, CRef *confl) {
   Lit lit_Undef;
   lit_Undef.x = -2;
 
+  __shared__ unsigned int undef_counter[NUM_WARPS];
+  __shared__ Lit l[NUM_WARPS];
+
+  const unsigned int thread_index = tid/32;
+  undef_counter[thread_index] = 0;
+  l[thread_index] = lit_Undef;
+  // printf("Block %d and thread %d entering\n", bid, tid);
+  __syncthreads();
+
   // unsigned int tid = threadIdx.x;
   // unsigned int bid = blockIdx.x;
   // unsigned int bdim = blockDim.x;
   // unsigned int gdim = gridDim.x;
-  //printf("enter nary_propagation %d %d\n", trail_p, trail_max);
+  // printf("enter nary_propagation %d %d\n", trail_p, trail_max);
+  if (bid == 0 and tid == 0)
+  {
+    //printf("nary propagation with %d blocks and %d threads doing %d literals\n", gdim, bdim, trail_max-trail_p);
+  }
   for (unsigned int lit_access=trail_p+bid; lit_access < trail_max; lit_access+=gdim) {
   //while (trail_p < trail_max) {
     //printf("nary propagation %d\n", trail_p);
@@ -320,38 +341,71 @@ __device__ void nary_propagation(unsigned int tid, unsigned int bid, unsigned in
     //printf("nary propagation lit p %d %d\n", var_device(p), sign_device(p));
     watchVector &wnary = watches[watch_index_device(p)];
     //printf("accessed wnary with index %u \n", watch_index_device(p));
-    for (int k = tid; k < wnary.size; k+=bdim) {
-      //printf("nary propagation wnary access %d of %u\n", k, wnary.size);
+    if (tid == 0)
+    {
+      //printf("nary propagating literal with %d nary clauses\n", wnary.size);
+    }
+    for (int k = thread_index; k < wnary.size; k+=NUM_WARPS) {
+      
       CRef cref = wnary.crefs[k];
       //printf("nary propagation cref %d\n", cref);
       const Clause &clause =
           *reinterpret_cast<Clause *>(&ca[reinterpret_cast<uint32_t>(cref)]);
-      Lit l = lit_Undef;
-
-      for (int i = 0; i < clause.size(); i++) {
+      if (tid % 32 == 0) {
+          //printf("nary propagation wnary access %d of %u has clause size: %d\n", k, wnary.size, clause.size());
+      }
+      //printf("nary propagation clause size %d\n", clause.size());
+      /// CAN BE OPTIMIZED USING __shfl_down_sync
+      for (int i = tid-(thread_index*32); i < clause.size(); i+=32) {
+        //printf("Handling position %d of clause %d by thread %d\n", i, k, tid);
         if (compare_lbool_device(value_device(clause[i], assigns_vardata), l_True_device)) {
-          goto Continue; // at least 1 true literal
+          atomicAdd_block(&undef_counter[thread_index], 2);
+          // printf("True: %d increased undef_counter[%d] to %d\n", i, thread_index, undef_counter[thread_index]);
+          //goto Continue; // at least 1 true literal
         }
         if (compare_lbool_device(value_device(clause[i], assigns_vardata), l_Undef_device)) {
-          if (l != lit_Undef) {
-            goto Continue; // 2 undefined literals
-          }
-          l = clause[i];
+          atomicAdd_block(&undef_counter[thread_index], 1);
+          // printf("Undef: %d increased undef_counter[%d] to %d\n", i, thread_index, undef_counter[thread_index]);
+          l[thread_index] = clause[i];
         }
       }
-      /// all literals are false
-      if (l == lit_Undef) {
-        //printf("nary propagation conflict %d\n", cref);
-        *confl = cref;
-        return;
+      __syncwarp();
+      // printf("Tid: %d, Tid mod 32: %d.  After sync undef_counter[%d] = %d\n", tid, tid%32, thread_index, undef_counter[thread_index]);
+      if (tid%32 == 0) { // use the first thread of the warp to check the results
+        // printf("Thread %d and block %d found %d undefined literals\n", bid, tid, undef_counter[thread_index]);
+        if (undef_counter[thread_index] == 1) {
+          // printf("Block %d and thread %d enqueue %d %d\n", bid, tid, var_device(l[thread_index]), sign_device(l[thread_index]));
+          uncheckedEnqueue(l[thread_index], cref, assigns_vardata, new_trail, trail_size, decision_level);
+        }
+        if (undef_counter[thread_index] == 0) {
+          //printf("nary propagation conflict %d\n", cref);
+          *confl = cref;
+          //return;
+        }
       }
-      //printf("nary propagation enqueue %d %d\n", var_device(l), sign_device(l));
-      uncheckedEnqueue(l, cref, assigns_vardata, new_trail, trail_size, decision_level);
-
-    Continue:;
+      
+     
+      __syncwarp();
+     
+      // // if there is a conflict in any other warp we have to stop
+      /// there is no easy way to stop the whole kernel except for pulling a global variable
+      // for (unsigned int i = 0; i < num_warps; i++) {
+      //   if (undef_counter[i] == 0) {
+      //     printf("Block %d and thread %d leaving\n", bid, tid);
+      //     return;
+      //   }
+      // }
+      // __syncthreads();
+      undef_counter[thread_index] = 0;
+      l[thread_index] = lit_Undef;
+      __syncwarp();
     }
   }
+  //printf("Block %d and thread %d leaving\n", bid, tid);
 }
+
+//compare with original code propagation using git stash
+
 
 __device__ void valid_propagation(unsigned int tid, unsigned int bid, unsigned int bdim, unsigned int gdim,
     unsigned int trail_p, int trail_max, Lit *new_trail, AssignVardata *assigns_vardata, CRef *confl) {
@@ -483,7 +537,7 @@ __global__ void propagate_control(MySolver solver);
 //   propagate_end<<<1, 1, 0, cudaStreamTailLaunch>>>(solver, trail_max);
 // }
 
-
+template <unsigned int NUM_WARPS>
 __global__ void propagate_control2(MySolver solver) {
   unsigned int tid = threadIdx.x;
   unsigned int bid = blockIdx.x;
@@ -495,7 +549,8 @@ __global__ void propagate_control2(MySolver solver) {
   // printf("I can synchronize: %d\n", g.is_valid());
   // cudaError_t t = cudaPeekAtLastError();
   // printf("GPUassert: %s\n", cudaGetErrorString(t));
-  // g.sync();
+  //if (bid == 0 && tid == 0) printf("ALL ENTER\n");
+  g.sync();
   // t = cudaPeekAtLastError();
   // printf("GPUassert: %s\n", cudaGetErrorString(t));
 
@@ -513,18 +568,38 @@ __global__ void propagate_control2(MySolver solver) {
     if (bid < gdim/divide)
       binary_propagation(tid, bid, bdim, gdim/divide, qhead, trail_max, solver.device_trail, solver.device_trail_size, solver.assigns_vardata, solver.watchesBin, solver.decision_level, solver.confl_device);
     else
-      nary_propagation(tid, bid-gdim/divide, bdim, gdim/divide, qhead, trail_max, solver.device_trail, solver.device_trail_size, solver.assigns_vardata, solver.watches, solver.ca, solver.decision_level, solver.confl_device);
+      nary_propagation<NUM_WARPS>(tid, bid-gdim/divide, bdim, gdim/divide, qhead, trail_max, solver.device_trail, solver.device_trail_size, solver.assigns_vardata, solver.watches, solver.ca, solver.decision_level, solver.confl_device);
 
     //printf("Block/Thread %d %d ready to sync\n", bid, tid);
     
     
     g.sync();
+    //if (bid == 0 && tid == 0) printf("ALL SYNCED\n");
     //*solver.qhead = trail_max;
     //printf("propagate end with device_trail_size %d\n", *solver.device_trail_size);
     /// print trail with respective decision levels
     // for (int i = 0; i < *solver.device_trail_size; i++) {
     //   //printf("trail %d %d with level %d\n", var_device(solver.device_trail[i]), sign_device(solver.device_trail[i]), level_device(var_device(solver.device_trail[i]), solver.assigns_vardata));
     // }
+    
+    
+    if (*solver.device_trail_size <= trail_max)
+    {
+      //printf("reached fixpoint\n");
+      //g.sync();
+
+      valid_propagation(tid, bid, bdim, gdim, qhead, *solver.device_trail_size, solver.device_trail, solver.assigns_vardata, solver.confl_device);
+      //printf("FINISHED PROPAGATION FOR BLOCK %d and THREAD %d\n", bid, tid);
+      return;
+    }
+    else {
+      qhead = trail_max;
+      trail_max = *solver.device_trail_size;
+      //printf("continue propagation with trail size %d/%d\n", qhead, trail_max);
+    }
+
+    g.sync();
+
     if (*solver.confl_device != CRef_Undef)
     {
       //printf("conflict: %d\n", *solver.confl_device);
@@ -533,22 +608,11 @@ __global__ void propagate_control2(MySolver solver) {
       //   if (solver.decision_level > 0)
       //     analyze(seen, solver.host_num_vars, *solver.confl_device, solver.device_trail, *solver.device_trail_size, solver.ca, solver.decision_level, solver.assigns_vardata, solver.device_conflict, solver.device_conflict_size, solver.device_backtrack_level);
       // }
+      //printf("FINISHED CONFLICT FOR BLOCK %d and THREAD %d\n", bid, tid);
       return;
     }
-    
-    if (*solver.device_trail_size <= trail_max)
-    {
-      //printf("reached fixpoint\n");
-      //g.sync();
 
-      valid_propagation(tid, bid, bdim, gdim, qhead, *solver.device_trail_size, solver.device_trail, solver.assigns_vardata, solver.confl_device);
-      return;
-    }
-    else {
-      qhead = trail_max;
-      trail_max = *solver.device_trail_size;
-      //printf("continue propagation with trail size %d/%d\n", qhead, trail_max);
-    }
+    g.sync(); // I cant let some blocks continue to create a conflict so old blocks get caught here. Why not? Because they get stuck on some other sync then
   }
 }
 
@@ -558,13 +622,26 @@ void propagate(MySolver &solver)
   static int num = 0;
   // std::cout << "propagate " << num << std::endl;
   ++num;
+  cudaEvent_t start, stop;
+  cudaEventCreate(&start);
+  cudaEventCreate(&stop);
 
   void *kernelArgs[] = {&solver};
-  cudaLaunchCooperativeKernel((void*)&propagate_control2, 12, 64, kernelArgs,  0/*solver.host_num_vars * sizeof(bool)*/, 0);
+
+  #define NUM_THREADS 128
+  #define NW (NUM_THREADS/32)
+
+  cudaEventRecord(start);
+  cudaLaunchCooperativeKernel((void*)&propagate_control2<NW>, 12, NUM_THREADS, kernelArgs,  0/*solver.host_num_vars * sizeof(bool)*/, 0);
+  cudaEventRecord(stop);
   //empty_test<<<1, 1>>>();
 
   gpuErrchk( cudaPeekAtLastError() );
-  gpuErrchk(cudaDeviceSynchronize());
+  gpuErrchk( cudaEventSynchronize(stop) );
+  //gpuErrchk(cudaDeviceSynchronize());
+  float milliseconds = 0;
+  cudaEventElapsedTime(&milliseconds, start, stop);
+  std::cout << "propagate time: " << int(milliseconds*1000) << std::endl;
 
 
 
