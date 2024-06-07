@@ -178,6 +178,8 @@ __device__ Lit  mkLit_device(Var var, bool sign = false) { Lit p; p.x = var + va
 #define l_True_device (lbool_device((uint8_t)0)) // gcc does not do constant propagation if these are real constants.
 #define l_False_device (lbool_device((uint8_t)1))
 #define l_Undef_device (lbool_device((uint8_t)2))
+__device__ int toInt_device(Lit p) { return p.x; }
+__device__ Lit toLit_device(int i) { Lit p; p.x = i; return p; }
 
 
 
@@ -310,18 +312,27 @@ __device__ void binary_propagation(unsigned int tid, unsigned int bid, unsigned 
   }
 }
 
+
+__device__ int warpReduceSum(int val) {
+    unsigned mask = 0xffffffff; // All threads participate
+    for (int offset = warpSize / 2; offset > 0; offset /= 2) {
+        val += __shfl_down_sync(mask, val, offset);
+    }
+    return val;
+}
+
 template <unsigned int NUM_WARPS>
 __device__ void nary_propagation(unsigned int tid, unsigned int bid, unsigned int bdim, unsigned int gdim,
     unsigned int trail_p, unsigned int trail_max, Lit *new_trail, unsigned int* trail_size, AssignVardata *assigns_vardata, watchVector *watches, uint32_t *ca, const int decision_level, CRef *confl) {
   Lit lit_Undef;
   lit_Undef.x = -2;
 
-  __shared__ unsigned int undef_counter[NUM_WARPS];
-  __shared__ Lit l[NUM_WARPS];
+  //__shared__ unsigned int undef_counter[NUM_WARPS];
+  //__shared__ Lit l[NUM_WARPS];
 
   const unsigned int thread_index = tid/32;
-  undef_counter[thread_index] = 0;
-  l[thread_index] = lit_Undef;
+  //undef_counter[thread_index] = 0;
+  //l[thread_index] = lit_Undef;
   // printf("Block %d and thread %d entering\n", bid, tid);
   __syncthreads();
 
@@ -356,33 +367,44 @@ __device__ void nary_propagation(unsigned int tid, unsigned int bid, unsigned in
       }
       //printf("nary propagation clause size %d\n", clause.size());
       /// CAN BE OPTIMIZED USING __shfl_down_sync
+      unsigned int undef_counter_local = 0;
+      Lit l = lit_Undef;
       for (int i = tid-(thread_index*32); i < clause.size(); i+=32) {
         //printf("Handling position %d of clause %d by thread %d\n", i, k, tid);
         if (compare_lbool_device(value_device(clause[i], assigns_vardata), l_True_device)) {
-          atomicAdd_block(&undef_counter[thread_index], 2);
+          undef_counter_local += 2;
+          //atomicAdd_block(&undef_counter[thread_index], 2);
           // printf("True: %d increased undef_counter[%d] to %d\n", i, thread_index, undef_counter[thread_index]);
           //goto Continue; // at least 1 true literal
         }
-        if (compare_lbool_device(value_device(clause[i], assigns_vardata), l_Undef_device)) {
-          atomicAdd_block(&undef_counter[thread_index], 1);
+        else if (compare_lbool_device(value_device(clause[i], assigns_vardata), l_Undef_device)) {
+          ++undef_counter_local;
+          //atomicAdd_block(&undef_counter[thread_index], 1);
           // printf("Undef: %d increased undef_counter[%d] to %d\n", i, thread_index, undef_counter[thread_index]);
-          l[thread_index] = clause[i];
+          //l[thread_index] = clause[i];
+          l = clause[i];
+          //printf("Block %d and thread %d found undefined literal %d %d\n", bid, tid, var_device(l), sign_device(l));
         }
+        
       }
-      __syncwarp();
+      //printf("Thread %d and block %d found %d undefined literals\n", bid, tid, undef_counter_local);
+      undef_counter_local = warpReduceSum(undef_counter_local); // i can make this shorter by using clause.size to only add up the necessary values
+      undef_counter_local = __shfl_sync(0xffffffff, undef_counter_local, 0);
+      //printf("Afterwards thread %d and block %d found %d undefined literals\n", bid, tid, undef_counter_local);
+      __syncwarp(); // redundant?
       // printf("Tid: %d, Tid mod 32: %d.  After sync undef_counter[%d] = %d\n", tid, tid%32, thread_index, undef_counter[thread_index]);
-      if (tid%32 == 0) { // use the first thread of the warp to check the results
+      //if (tid%32 == 0) { // use the first thread of the warp to check the results
         // printf("Thread %d and block %d found %d undefined literals\n", bid, tid, undef_counter[thread_index]);
-        if (undef_counter[thread_index] == 1) {
-          // printf("Block %d and thread %d enqueue %d %d\n", bid, tid, var_device(l[thread_index]), sign_device(l[thread_index]));
-          uncheckedEnqueue(l[thread_index], cref, assigns_vardata, new_trail, trail_size, decision_level);
-        }
-        if (undef_counter[thread_index] == 0) {
-          //printf("nary propagation conflict %d\n", cref);
-          *confl = cref;
-          //return;
-        }
+      if (undef_counter_local == 1 && l != lit_Undef) {
+        //printf("Block %d and thread %d enqueue %d %d\n", bid, tid, var_device(l), sign_device(l));
+        uncheckedEnqueue(l, cref, assigns_vardata, new_trail, trail_size, decision_level);
       }
+      if (tid%32 == 0 && undef_counter_local == 0) {
+        //printf("nary propagation conflict %d\n", cref);
+        *confl = cref;
+        //return;
+      }
+      //}
       
      
       __syncwarp();
@@ -396,9 +418,6 @@ __device__ void nary_propagation(unsigned int tid, unsigned int bid, unsigned in
       //   }
       // }
       // __syncthreads();
-      undef_counter[thread_index] = 0;
-      l[thread_index] = lit_Undef;
-      __syncwarp();
     }
   }
   //printf("Block %d and thread %d leaving\n", bid, tid);
