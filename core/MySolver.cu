@@ -569,7 +569,7 @@ __global__ void propagate_control2(MySolver solver) {
   // cudaError_t t = cudaPeekAtLastError();
   // printf("GPUassert: %s\n", cudaGetErrorString(t));
   //if (bid == 0 && tid == 0) printf("ALL ENTER\n");
-  g.sync();
+  //g.sync();
   // t = cudaPeekAtLastError();
   // printf("GPUassert: %s\n", cudaGetErrorString(t));
 
