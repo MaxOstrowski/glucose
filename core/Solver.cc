@@ -1491,9 +1491,11 @@ lbool Solver::search(int nof_conflicts) {
         
         MySolver ms = create_solver(*this);
         t1 = std::chrono::high_resolution_clock::now();
+        std::cout << "before propagate" << std::endl;
         ::propagate(ms);
         //myprop.propagate();
         t2 = std::chrono::high_resolution_clock::now();
+        std::cout << "after propagate" << std::endl;
         gpu_duration += std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
         CRef confl = propagate();
         t3 = std::chrono::high_resolution_clock::now();

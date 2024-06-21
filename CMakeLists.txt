@@ -33,8 +33,8 @@ endif()
 add_library(glucose ${lib_type} ${lib_srcs})
 # Cuda stuff
 
-#set(CMAKE_CUDA_FLAGS ${CMAKE_CUDA_FLAGS} "-g -G")  # enable cuda-gdb
-target_compile_options(glucose PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>)
+set(CMAKE_CUDA_FLAGS ${CMAKE_CUDA_FLAGS} "-g -G")  # enable cuda-gdb
+#target_compile_options(glucose PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>)
 target_include_directories(glucose PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 #target_include_directories(glucose PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
 #target_include_directories(glucose PRIVATE "/home/ostrowski/miniforge3/envs/gcc12/include")

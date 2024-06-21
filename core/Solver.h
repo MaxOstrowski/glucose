@@ -297,8 +297,8 @@ public:
     struct Watcher {
         CRef cref;
         Lit  blocker;
-        Watcher() : cref(CRef_Undef), blocker(lit_Undef) {}
-        Watcher(CRef cr, Lit p) : cref(cr), blocker(p) {}
+        __device__ __host__ Watcher() : cref(CRef_Undef), blocker(lit_Undef) {}
+        __device__ __host__ Watcher(CRef cr, Lit p) : cref(cr), blocker(p) {}
         bool operator==(const Watcher& w) const { return cref == w.cref; }
         bool operator!=(const Watcher& w) const { return cref != w.cref; }
 /*        Watcher &operator=(Watcher w) {

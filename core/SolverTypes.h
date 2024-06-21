@@ -160,6 +160,7 @@ typedef RegionAllocator<uint32_t>::Ref CRef;
 #endif
 #define BITS_REALSIZE 32
 class Clause {
+public:
     struct {
       unsigned mark       : 2;
       unsigned learnt     : 1;
@@ -183,6 +184,8 @@ class Clause {
     union { Lit lit; float act; uint32_t abs; CRef rel; } data[0];
 
     friend class ClauseAllocator;
+
+    __device__ Clause() {} // my bad stuff
 
     // NOTE: This constructor cannot be used directly (doesn't allocate enough memory).
     template<class V>

@@ -10,6 +10,16 @@
 
 using namespace Glucose;
 
+/// This create a ordered heap datastructure for cuda device code
+/// It has a fixed size limit and does no checks on size
+/// It has also support for increase/decrease key operations
+/// It is a min heap
+
+#include "core/SolverTypes.h"
+
+using namespace Glucose;
+
+
 __host__ int watch_index(Lit l) { return var(l) * 2 + int(sign(l)); }
 
 
@@ -71,6 +81,7 @@ MySolver create_solver(Solver &solver)
       Lit lit = mkLit(i, false);
       unsigned int size = solver.watchesBin[lit].size();
       mysolver.hostBinWatch[watch_index(lit)].size = size;
+      mysolver.hostBinWatch[watch_index(lit)].capacity = size;
       mysolver.hostBinWatch[watch_index(lit)].watches = nullptr;
       if (size > 0) {
         gpuErrchk(cudaMalloc((void **)&mysolver.hostBinWatch[watch_index(lit)].watches, size * sizeof(Solver::Watcher)));
@@ -81,6 +92,7 @@ MySolver create_solver(Solver &solver)
       Lit lit = mkLit(i, true);
       unsigned int size = solver.watchesBin[lit].size();
       mysolver.hostBinWatch[watch_index(lit)].size = size;
+      mysolver.hostBinWatch[watch_index(lit)].capacity = size;
       mysolver.hostBinWatch[watch_index(lit)].watches = nullptr;
       if (size > 0) {
         gpuErrchk(cudaMalloc((void **)&mysolver.hostBinWatch[watch_index(lit)].watches, size * sizeof(Solver::Watcher)));
@@ -89,8 +101,8 @@ MySolver create_solver(Solver &solver)
     }
   }
 
-  gpuErrchk(cudaMalloc((void **)&mysolver.watchesBin, sizeof(binWatchVector) * num_vars * 2));
-  gpuErrchk(cudaMemcpy(mysolver.watchesBin, mysolver.hostBinWatch, sizeof(binWatchVector) * num_vars * 2, cudaMemcpyHostToDevice));
+  gpuErrchk(cudaMalloc((void **)&mysolver.device_watchesBin, sizeof(binWatchVector) * num_vars * 2));
+  gpuErrchk(cudaMemcpy(mysolver.device_watchesBin, mysolver.hostBinWatch, sizeof(binWatchVector) * num_vars * 2, cudaMemcpyHostToDevice));
 
   // create complete occuruence lists in watches
   std::vector<std::vector<CRef>> clause_refs(num_vars * 2, std::vector<CRef>());
@@ -136,6 +148,7 @@ MySolver create_solver(Solver &solver)
       Lit lit = mkLit(i, false);
       unsigned int size = clause_refs[watch_index(lit)].size();
       mysolver.hostWatches[watch_index(lit)].size = size;
+      mysolver.hostWatches[watch_index(lit)].capacity = size;
       mysolver.hostWatches[watch_index(lit)].crefs = nullptr;
       if (size > 0) {
         gpuErrchk(cudaMalloc((void **)&mysolver.hostWatches[watch_index(lit)].crefs, size * sizeof(CRef)));
@@ -147,6 +160,7 @@ MySolver create_solver(Solver &solver)
       Lit lit = mkLit(i, true);
       unsigned int size = clause_refs[watch_index(lit)].size();
       mysolver.hostWatches[watch_index(lit)].size = size;
+      mysolver.hostWatches[watch_index(lit)].capacity = size;
       mysolver.hostWatches[watch_index(lit)].crefs = nullptr;
       if (size > 0) {
         gpuErrchk(cudaMalloc((void **)&mysolver.hostWatches[watch_index(lit)].crefs, size * sizeof(CRef)));
@@ -155,14 +169,29 @@ MySolver create_solver(Solver &solver)
       }
     }
   }
-  gpuErrchk(cudaMalloc((void **)&mysolver.watches, sizeof(watchVector) * num_vars * 2));
-  gpuErrchk(cudaMemcpy(mysolver.watches, mysolver.hostWatches, sizeof(watchVector) * num_vars * 2, cudaMemcpyHostToDevice));
+  gpuErrchk(cudaMalloc((void **)&mysolver.device_watches, sizeof(watchVector) * num_vars * 2));
+  gpuErrchk(cudaMemcpy(mysolver.device_watches, mysolver.hostWatches, sizeof(watchVector) * num_vars * 2, cudaMemcpyHostToDevice));
 
 
   // copy clause database
-  gpuErrchk(cudaMalloc((void **)&mysolver.ca, sizeof(uint32_t) * solver.ca.size()));
-  gpuErrchk(cudaMemcpy(mysolver.ca, solver.ca.lea(0), sizeof(uint32_t) * solver.ca.size(), cudaMemcpyHostToDevice));
+  unsigned int ca_size = solver.ca.size();
+  gpuErrchk(cudaMalloc((void **)&mysolver.device_ca, sizeof(uint32_t) * solver.ca.size()));
+  gpuErrchk(cudaMemcpy(mysolver.device_ca, solver.ca.lea(0), sizeof(uint32_t) * solver.ca.size(), cudaMemcpyHostToDevice));
+  gpuErrchk(cudaMalloc((void **)&mysolver.device_ca_size, sizeof(uint32_t)));
+  gpuErrchk(cudaMemcpy(mysolver.device_ca_size, &ca_size, sizeof(uint32_t), cudaMemcpyHostToDevice)); // could already reserve some extra memory!
+  gpuErrchk(cudaMalloc((void **)&mysolver.device_ca_capacity, sizeof(uint32_t)));
+  gpuErrchk(cudaMemcpy(mysolver.device_ca_capacity, &ca_size, sizeof(uint32_t), cudaMemcpyHostToDevice));
 
+  // create device_seen and initialize with false
+  gpuErrchk(cudaMalloc((void **)&mysolver.device_seen, sizeof(bool) * num_vars));
+  gpuErrchk(cudaMemset(mysolver.device_seen, 0, sizeof(bool) * num_vars));
+
+  // initialie selection heap
+  mysolver.host_decision_heap = new CudaOrderedHeap();
+  mysolver.host_decision_heap->init(num_vars);
+  gpuErrchk(cudaMalloc((void **)&mysolver.device_decision_heap, sizeof(CudaOrderedHeap)));
+  gpuErrchk(cudaMemcpy(mysolver.device_decision_heap, mysolver.host_decision_heap, sizeof(CudaOrderedHeap), cudaMemcpyHostToDevice));
+  
   gpuErrchk(cudaDeviceSynchronize());
 
   return mysolver;
@@ -205,6 +234,16 @@ __device__ void uncheckedEnqueue(Lit p, CRef cref, AssignVardata *assigns_vardat
   assigns_vardata[var_device(p)] = temp; // ensure that these are written atomically relaxed
 }
 
+__device__ Lit pick_branch_lit(CudaOrderedHeap* heap, AssignVardata* assigns_vardata, unsigned int num_vars) {
+  for (Var i = 0; i < num_vars; ++i) {
+    if (assigns_vardata[i].assign == l_Undef_device) {
+      return mkLit_device(i, false);
+    }
+  }
+  return lit_Undef;
+  //return mkLit_device(heap->pop(), false);
+}
+
 
 // EVEN IF I GO TO 1 Block and 1024 threads (32 warps) I have problems with the free scheduling of work.
 // If 1 warp writes to assign, it can call threadfence to ensure that it is written into global memory.
@@ -245,17 +284,22 @@ void destroy_solver(MySolver &solver)
       gpuErrchk(cudaFree(solver.hostWatches[watch_index(mkLit(i, false))].crefs));
       gpuErrchk(cudaFree(solver.hostWatches[watch_index(mkLit(i, true))].crefs));
     }
-    gpuErrchk(cudaFree(solver.watchesBin));
-    gpuErrchk(cudaFree(solver.watches));
+    gpuErrchk(cudaFree(solver.device_watchesBin));
+    gpuErrchk(cudaFree(solver.device_watches));
     delete[] solver.hostBinWatch;
     delete[] solver.hostWatches;
-    gpuErrchk(cudaFree(solver.ca));
+    gpuErrchk(cudaFree(solver.device_ca));
+    gpuErrchk(cudaFree(solver.device_ca_size));
+    gpuErrchk(cudaFree(solver.device_ca_capacity));
 
     gpuErrchk(cudaFree(solver.device_conflict));
     gpuErrchk(cudaFree(solver.device_conflict_size));
     gpuErrchk(cudaFree(solver.device_backtrack_level));
     delete solver.confl_host;
     delete[] solver.host_conflict;
+    solver.host_decision_heap->destroy();
+    gpuErrchk(cudaFree(solver.device_decision_heap));
+    gpuErrchk(cudaFree(solver.device_seen));
 }
 
 __device__ bool isExactlyOneBitSet(uint32_t n) {
@@ -266,7 +310,105 @@ __device__ int getSetBitPosition(uint32_t n) {
     return __ffs(n);
 }
 
-__device__ void analyze(bool* seen, unsigned int nVars, CRef confl, Lit* trail, unsigned int trail_size, uint32_t *ca, const int decision_level, AssignVardata* assigns_vardata ,Lit* out_learnt, unsigned int* out_learnt_size, unsigned int* out_btlevel);
+// 1 move over conflicting clause
+// everything from old decision level is added to the conflict clause
+// everything on current decision level is replaced by its reason
+// same rules apply for reason, everything old is added, everything new is replaced
+// we all all this in backwards order of trail
+// stop condition unclear
+__device__ void analyze(bool* seen, CudaOrderedHeap* decision_heap, int nVars, CRef confl, Lit* trail, unsigned int trail_size, uint32_t *ca, const int decision_level, AssignVardata* assigns_vardata ,Lit* out_learnt, unsigned int* out_learnt_size, unsigned int* out_btlevel) {
+    int pathC = 0;
+    Lit lit_Undef;
+    lit_Undef.x = -2;
+    Lit p = lit_Undef;
+    *out_learnt_size = 0;
+    //printf("Analyze with trail size %d\n", trail_size);
+    for (int i = 0; i < trail_size; i++) {
+        //printf("trail %d %d\n", var_device(trail[i]), sign_device(trail[i]));
+    }
+
+    /// create shared memory for seen variables in size of variables
+    /// initialize correctly with nvars*sizeof(bool)
+    for (unsigned int i = 0; i < nVars; ++i) {
+      //printf("Accessing shared memory\n");
+      seen[i] = false;
+    }
+    //printf("set all seen to false\n");
+    // in the current decision level which is much smaller, but then indexing gets much harder
+
+    // Generate conflict clause:
+    //
+    *out_learnt_size +=1;  // (leave room for the asserting literal)
+    unsigned int index = trail_size - 1;
+    do {
+        //printf("index %d and pathC %d\n", index, pathC);
+        //printf("ConflictCRef: %d\n", confl);
+        assert(confl != CRef_Undef); // (otherwise should be UIP)
+        const Clause &c = *reinterpret_cast<Clause *>(&ca[reinterpret_cast<uint32_t>(confl)]);
+        //printf("c analysiere %d\n", confl);
+        for (int i = 0; i < c.size(); i++) {
+           //printf("c %d %d with level %d\n", var_device(c[i]), sign_device(c[i]), level_device(var_device(c[i]), assigns_vardata));
+        }
+
+        for(int j = 0; j < c.size(); j++) {
+            Lit q = c[j];
+            if (p == q)
+                continue;
+
+            //printf("check for seen %d\n", var_device(q));
+            if(!seen[var_device(q)]) {
+                //decision_heap->increaseKey(var_device(q));
+                //printf("not yet seen\n");
+                if(level_device(var_device(q), assigns_vardata) == 0) {
+                } else { // Here, the old case
+                    seen[var_device(q)] = true;
+                    //printf("compare level %d >= %d\n", level_device(var_device(q), assigns_vardata), decision_level);
+                    if(level_device(var_device(q), assigns_vardata) >= decision_level) {
+                        //printf("increment pathC\n");
+                        pathC++;
+                    } else {
+                        //printf("accessing out_learnt %d and writing %d %d\n", *out_learnt_size, var_device(q), sign_device(q));
+                        out_learnt[(*out_learnt_size)++] = q;
+                    }
+                }
+            }
+        }
+        //printf("end of loop, trailing down with index %d\n", index);
+
+        // Select next clause to look at:
+        while (!seen[var_device(trail[index--])]);
+        //printf("trailed down to %d\n", index);
+        p = trail[index + 1];
+        //printf("next p %d %d\n", var_device(p), sign_device(p));
+        //stats[sumRes]++;
+        confl = reason_device(var_device(p), assigns_vardata);
+        //printf("next confl %d\n", confl);
+        seen[var_device(p)] = false;
+        //printf("set seen %d to false\n", var_device(p));
+        pathC--;
+        //printf("decrement pathC to %d\n", pathC);
+
+    } while(pathC > 0);
+    
+    out_learnt[0] = ~p;
+    
+    // Find correct backtrack level:
+    //
+    if(*out_learnt_size == 1)
+        *out_btlevel = 0;
+    else {
+        int max_i = 1;
+        // Find the first literal assigned at the next-highest level:
+        for(int i = 2; i < *out_learnt_size; i++)
+            if(level_device(var_device(out_learnt[i]), assigns_vardata) > level_device(var_device(out_learnt[max_i]), assigns_vardata))
+                max_i = i;
+        // Swap-in this literal at index 1:
+        Lit p = out_learnt[max_i];
+        out_learnt[max_i] = out_learnt[1];
+        out_learnt[1] = p;
+        *out_btlevel = level_device(var_device(p), assigns_vardata);
+    }
+}
 
 __device__ void binary_propagation(unsigned int trail_p, Lit *new_trail, unsigned int *trail_size, AssignVardata *assigns_vardata, binWatchVector *watchesBin, const int decision_level, CRef *confl)
 {
@@ -435,76 +577,78 @@ void compare(MySolver &mysolver, Solver& s, CRef confl)
   //std::cout << "PROBLEM: I have a conflict, they not" << std::endl;
 }
 
-__global__ void propagate_control(MySolver solver);
-
-// __global__ void propagate_end(MySolver solver, unsigned int trail_max) {
-//   //printf("propagate end with previous qhead %d and new %d and confl %d \n", *solver.qhead, trail_max, *solver.confl_device);
-//   *solver.qhead = trail_max;
-//   //printf("propagate end with device_trail_size %d\n", *solver.device_trail_size);
-//   /// print trail with respective decision levels
-//   for (int i = 0; i < *solver.device_trail_size; i++) {
-//     //printf("trail %d %d with level %d\n", var_device(solver.device_trail[i]), sign_device(solver.device_trail[i]), level_device(var_device(solver.device_trail[i]), solver.assigns_vardata));
-//   }
-//   if (*solver.confl_device != CRef_Undef)
-//   {
-//     if (solver.decision_level == 0)
-//     {
-//       // conflict on dl 0
-//       return;
-//     }
-//     analyze<<<1, 1, solver.host_num_vars * sizeof(bool), cudaStreamTailLaunch>>>(solver.host_num_vars, *solver.confl_device, solver.device_trail, *solver.device_trail_size, solver.ca, solver.decision_level, solver.assigns_vardata, solver.device_conflict, solver.device_conflict_size, solver.device_backtrack_level);
-//     return;
-//   }
-//   else if (*solver.device_trail_size > trail_max)
-//   {
-//     //printf("continue propagation\n");
-//     propagate_control<<<1, 1, 0, cudaStreamTailLaunch>>>(solver);
-//   }
-// }
-
-// __global__ void propagate_control(MySolver solver) {
-//   // assert only 1 thread and 1 block running
-//   /// TODO
-
-//   unsigned int trail_max = *solver.device_trail_size;
-//   unsigned int qhead = *solver.qhead;
-//   //printf("propagate control on decision level %d with qhead %d and trail_max %d\n", solver.decision_level, qhead, trail_max);
-//   /// print trail with respective decision levels
-//   //for (int i = 0; i < *solver.device_trail_size; i++) {
-//     //printf("trail %d %d with level %d\n", var_device(solver.device_trail[i]), sign_device(solver.device_trail[i]), level_device(var_device(solver.device_trail[i]), solver.assigns_vardata));
-//   //}
+/// method adds a clause to the clause database
+/// might need to reallocate space in ca
+__device__ void add_clause(Lit* conflict, unsigned int* conflict_size, uint32_t** ca, unsigned int* ca_size, unsigned int* ca_capacity, watchVector* watches, binWatchVector* watchesBin) {
+  if (*ca_size + *conflict_size > *ca_capacity) {
+    //printf("need to reallocate clause database\n");
+    unsigned int new_capacity = (int)(*ca_capacity * 1.5f); // minimum growth should be clause size!
+    uint32_t* new_ca = new uint32_t[new_capacity];
+    for (unsigned int i = 0; i < *ca_size; ++i) {
+      new_ca[i] = (*ca)[i];
+    }
+    delete[] *ca; //make test to see if I can use delete[] in device code BAD: https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#dynamic-global-memory-allocation-and-operations
+    /// dynamic new/delete seems to be using "heap" memory, which is not the same as global memory but a predefined subset, set to 8MB on default
+    (*ca) = new_ca;
+    *ca_capacity = new_capacity;
+  }
+  //printf("add clause with size %d\n", *conflict_size);
+  Clause& c = *(Clause*)(*ca)[*ca_size];
+  c.header.mark      = 0;
+  c.header.learnt    = 1;
+  c.header.extra_size = 0;
+  c.header.reloced   = 0;
+  c.header.size      = *conflict_size;
+  c.header.lbd = 0;
+  c.header.canbedel = 1;
+  c.header.exported = 0; 
+  c.header.oneWatched = 0;
+  c.header.simplified = 0;
+  c.header.seen = 0;
   
-//   binary_propagation<<<8, 32, 0, cudaStreamFireAndForget>>>(qhead, trail_max, solver.device_trail, solver.device_trail_size, solver.assigns_vardata, solver.watchesBin, solver.decision_level, solver.confl_device);
-//   nary_propagation<<<8, 32, 0, cudaStreamFireAndForget>>>(qhead, trail_max, solver.device_trail, solver.device_trail_size, solver.assigns_vardata, solver.watches, solver.ca, solver.decision_level, solver.confl_device);
-//   valid_propagation<<<1, 32, 0, cudaStreamTailLaunch>>>(qhead, trail_max, solver.device_trail, solver.assigns_vardata, solver.confl_device);
-//   propagate_end<<<1, 1, 0, cudaStreamTailLaunch>>>(solver, trail_max);
-// }
+  for (int i = 0; i < c.header.size; i++) 
+    c.data[i].lit = conflict[i];
 
-// a function that increments the device qhead for each block entering
-// do not increment over maximum trail size
-// __device__ bool atomicAddThreshold(unsigned int* address, unsigned int* threshold, unsigned int& qhead) {
-  
-//   bool increased;
-//   increased = false;
-//   __syncthreads();
-//   if (threadIdx.x == 0) {
-//     unsigned int next;
-//     unsigned int old = *address, assumed;
-//     do {
-//       assumed = old;
-//       next = assumed + 1 > *threshold ? *threshold : assumed + 1;
-//       old = atomicCAS(address, assumed, next);
-//     } while (assumed != old);
-//     qhead = old;
-//     increased = next > assumed;
-//   }
-//   // //printf("before syncing threads in atomicAddThreshold, %d/%d has qhead %d\n", threadIdx.x, blockIdx.x, qhead);
-//   return __syncthreads_or(increased);
-// }
+  // add watches and maybe increase watch size 
+  if (*conflict_size == 2) {
+    Lit p = conflict[0];
+    Lit q = conflict[1];
+    watchesBin[watch_index_device(p)].push(*ca_size, q);
+    watchesBin[watch_index_device(q)].push(*ca_size, p);
+  }
+  else {
+    for (int i = 0; i < c.header.size; i++) {
+      watches[watch_index_device(c.data[i].lit)].push(*ca_size);
+    }
+  }
+
+  *ca_size += sizeof(Clause)/sizeof(uint32_t) + *conflict_size;
+	
+}
+
+
+__device__ void backtrack(unsigned int backtrack_level, AssignVardata* assigns_vardata, unsigned int& decision_level, Lit* device_trail, unsigned int* device_trail_size) {
+  unsigned int trail_p = *device_trail_size;
+  while (trail_p > 0 && level_device(var_device(device_trail[trail_p-1]), assigns_vardata) > backtrack_level) {
+    assigns_vardata[var_device(device_trail[trail_p-1])].assign = l_Undef_device;
+    --trail_p;
+  }
+  *device_trail_size = trail_p;
+  decision_level = backtrack_level;
+}
 
 
 template <unsigned char NUM_WARPS>
 __global__ void propagate_control2(MySolver solver) {
+
+  // if (threadIdx.x == 0) {
+  //   printf("All heap pointer information: \n");
+  //   printf("Heap size %d\n", solver.device_decision_heap->size);
+  //   printf("Heap heap %p\n", solver.device_decision_heap->heap);
+
+
+    
+  // }
 
   unsigned char warp_id = threadIdx.x / warpSize;
   const unsigned char NUM_BIN_PROP_WARPS = 2;
@@ -518,10 +662,15 @@ __global__ void propagate_control2(MySolver solver) {
   /*
   Clauses can be learnt by reserving all memory we have in advance. Problem. Watches need to grow dynamically. Apparently i can use new/delete[] now in kernels for global memory.
   */
+  __shared__ unsigned int decision_level;
+  decision_level = solver.decision_level;
   __shared__ int qhead_index[NUM_WARPS];
   __shared__ int clause_index[NUM_WARPS]; // can safe one for thread 0, as bin prop does not need it
-  __shared__ bool finished;
-  finished = false;
+  __shared__ bool fixpoint;
+  fixpoint = false;
+  __shared__ bool exhausted;
+  exhausted = false;
+
   unsigned int qhead_start_nary = original_qhead; // currently only used in warp 0
   unsigned int qhead_start_binary = original_qhead; // currently only used in warp 0
   for (unsigned char i = 0; i < NUM_BIN_PROP_WARPS; ++i) {
@@ -533,79 +682,129 @@ __global__ void propagate_control2(MySolver solver) {
   unsigned int clause_start = 0;
   __syncthreads();
 
-  while(true) { // busy waiting loop
+  while(true) {
+    while(true) { // busy waiting loop
 
-    __syncthreads();
-    if (warp_id == 0) {
-      /// thread 0 spreads the work to all warps 1..NUM_WARPS
-      /// warp 0 is supposed to do binary propagation
-      if (threadIdx.x == 0) {
-        // assign work for binary propagation
-        for (unsigned int i = 0; i < NUM_BIN_PROP_WARPS; ++i) {
-          if (qhead_start_binary < *solver.device_trail_size) {
-            qhead_index[i] = qhead_start_binary;
-            ++qhead_start_binary;
+      __syncthreads();
+      if (exhausted) {
+        return;
+      }
+      if (warp_id == 0) {
+        /// thread 0 spreads the work to all warps 1..NUM_WARPS
+        /// warp 0 is supposed to do binary propagation
+        if (threadIdx.x == 0) {
+          if (*solver.confl_device != CRef_Undef) {
+            fixpoint = true;
           }
           else {
-            qhead_index[i] = -1;
-          }
-        }
-        // assign work for nary propagation
-        unsigned char num_created = NUM_BIN_PROP_WARPS;
-        while (qhead_start_nary < *solver.device_trail_size) {
-          Lit p = solver.device_trail[qhead_start_nary];
-          watchVector &wnary = solver.watches[watch_index_device(p)];
-          unsigned int max_loop = min((unsigned int)(NUM_WARPS-num_created), (unsigned int)(wnary.size - clause_start));
-          // printf(" for qstart %d max loop %d and wnary.size %d and num_created before %d and clause start %d\n", qhead_start_nary, max_loop, wnary.size, num_created, clause_start);
-          for (unsigned int k = 0; k < max_loop; ++k) {
-            qhead_index[num_created+k] = qhead_start_nary;
-            clause_index[num_created+k] = clause_start;
-            ++clause_start;
-          }
-          num_created+=max_loop;
-          // printf("Clause start %d vs wnary.size %d\n", clause_start, wnary.size);
-          if (clause_start == wnary.size) {
-            clause_start = 0;
-            ++qhead_start_nary;
-          }
-          if (num_created == NUM_WARPS) {
-            break;
-          }
-        }
-        // printf("created %d warps\n", num_created);
-        // fill the rest with -1 if we run out of work
-        for (unsigned int k = num_created; k < NUM_WARPS; ++k) {
-          qhead_index[k] = -1;
-        }
-        if (qhead_index[0] == -1 && qhead_index[NUM_BIN_PROP_WARPS] == -1) {
-          finished = true;
-        }
+            // assign work for binary propagation
+            for (unsigned int i = 0; i < NUM_BIN_PROP_WARPS; ++i) {
+              if (qhead_start_binary < *solver.device_trail_size) {
+                qhead_index[i] = qhead_start_binary;
+                ++qhead_start_binary;
+              }
+              else {
+                qhead_index[i] = -1;
+              }
+            }
+            // assign work for nary propagation
+            unsigned char num_created = NUM_BIN_PROP_WARPS;
+            while (qhead_start_nary < *solver.device_trail_size) {
+              Lit p = solver.device_trail[qhead_start_nary];
+              watchVector &wnary = solver.device_watches[watch_index_device(p)];
+              unsigned int max_loop = min((unsigned int)(NUM_WARPS-num_created), (unsigned int)(wnary.size - clause_start));
+              // printf(" for qstart %d max loop %d and wnary.size %d and num_created before %d and clause start %d\n", qhead_start_nary, max_loop, wnary.size, num_created, clause_start);
+              for (unsigned int k = 0; k < max_loop; ++k) {
+                qhead_index[num_created+k] = qhead_start_nary;
+                clause_index[num_created+k] = clause_start;
+                ++clause_start;
+              }
+              num_created+=max_loop;
+              // printf("Clause start %d vs wnary.size %d\n", clause_start, wnary.size);
+              if (clause_start == wnary.size) {
+                clause_start = 0;
+                ++qhead_start_nary;
+              }
+              if (num_created == NUM_WARPS) {
+                break;
+              }
+            }
+            // printf("created %d warps\n", num_created);
+            // fill the rest with -1 if we run out of work
+            for (unsigned int k = num_created; k < NUM_WARPS; ++k) {
+              qhead_index[k] = -1;
+            }
+            if (qhead_index[0] == -1 && qhead_index[NUM_BIN_PROP_WARPS] == -1) {
+              fixpoint = true;
+            }
 
-        for (unsigned int i = 0; i < NUM_WARPS; ++i) {
-          // printf("warp %d qhead %d clause %d\n", i, qhead_index[i], clause_index[i]);
+            for (unsigned int i = 0; i < NUM_WARPS; ++i) {
+              printf("warp %d qhead %d clause %d\n", i, qhead_index[i], clause_index[i]);
+            }
+          }
+        }  
+      }
+      __syncthreads();
+      if (fixpoint) {
+        break;
+      }
+      // do the actual propagation
+      if (warp_id < NUM_BIN_PROP_WARPS) {
+        if (qhead_index[warp_id] != -1) {
+          //printf("BinProp threadIdx.x %d", threadIdx.x);
+          printf("Call binary propagation with qhead_index %d\n", qhead_index[warp_id]);
+          binary_propagation(qhead_index[warp_id], solver.device_trail, solver.device_trail_size, solver.assigns_vardata, solver.device_watchesBin, decision_level, solver.confl_device);
         }
-      }  
+      }
+      else {
+        if (qhead_index[warp_id] != -1) {
+          printf("Call nary propagation with qhead_index %d and clause index %d\n", qhead_index[warp_id], clause_index[warp_id]);
+          nary_propagation(qhead_index[warp_id], clause_index[warp_id], solver.device_trail, solver.device_trail_size, solver.assigns_vardata, solver.device_watches, solver.device_ca, decision_level, solver.confl_device);
+        }
+      }
     }
+    valid_propagation(original_qhead, *solver.device_trail_size, solver.device_trail, solver.assigns_vardata, solver.confl_device);
+    /// I think I might need to check double entries in the device trail, two clauses can propagate the same literal with different reasons
+    /// could I possibly get cyclic reasons if I remove the wrong double entry?
+
     __syncthreads();
-    if (finished) {
-      break;
-    }
-    // do the actual propagation
-    if (warp_id < NUM_BIN_PROP_WARPS) {
-      if (qhead_index[warp_id] != -1) {
-        //printf("BinProp threadIdx.x %d", threadIdx.x);
-        //printf("Call binary propagation with qhead_index %d\n", qhead_index[warp_id]);
-        binary_propagation(qhead_index[warp_id], solver.device_trail, solver.device_trail_size, solver.assigns_vardata, solver.watchesBin, solver.decision_level, solver.confl_device);
+    qhead_start_binary = *solver.device_trail_size;
+    qhead_start_nary = *solver.device_trail_size;
+    if (threadIdx.x == 0 ) {
+      if (*solver.confl_device != CRef_Undef)
+      {
+        if (solver.decision_level == 0)
+        {
+          printf("UNSAT\n");
+          exhausted = true;
+          // conflict on dl 0
+          //return;
+        }
+        analyze(solver.device_seen, solver.device_decision_heap, solver.host_num_vars, *solver.confl_device, solver.device_trail, *solver.device_trail_size, solver.device_ca, solver.decision_level, solver.assigns_vardata, solver.device_conflict, solver.device_conflict_size, solver.device_backtrack_level);
+        add_clause(solver.device_conflict, solver.device_conflict_size, &solver.device_ca, solver.device_ca_size, solver.device_ca_capacity, solver.device_watches, solver.device_watchesBin);
+        *solver.device_conflict_size = 0;
+        printf("Found conflict, need to BACKTRACK!!!!\n");
+        backtrack(*solver.device_backtrack_level, solver.assigns_vardata, decision_level, solver.device_trail, solver.device_trail_size);
+        uncheckedEnqueue(solver.device_conflict[0], CRef_Undef, solver.assigns_vardata, solver.device_trail, solver.device_trail_size, decision_level);       
+      }
+      else {
+        //printf("No conflict, need to make a decision\n");
+        Lit s = pick_branch_lit(solver.device_decision_heap, solver.assigns_vardata, solver.host_num_vars);
+        printf("picked branch lit %d %d\n", var_device(s), sign_device(s));
+        if (s != lit_Undef) {
+          solver.decision_level++;
+          uncheckedEnqueue(s, CRef_Undef, solver.assigns_vardata, solver.device_trail, solver.device_trail_size, decision_level);
+        }
+        else {
+          // found a model
+          exhausted = true;
+          printf("Found a model\n");
+        }
       }
     }
-    else {
-      if (qhead_index[warp_id] != -1) {
-        //printf("Call nary propagation with qhead_index %d and clause index %d\n", qhead_index[warp_id], clause_index[warp_id]);
-        nary_propagation(qhead_index[warp_id], clause_index[warp_id], solver.device_trail, solver.device_trail_size, solver.assigns_vardata, solver.watches, solver.ca, solver.decision_level, solver.confl_device);
-      }
-    }
-  }
-  valid_propagation(original_qhead, *solver.device_trail_size, solver.device_trail, solver.assigns_vardata, solver.confl_device);
+    fixpoint = false;
+
+  } // outer while true
 }
 
 
@@ -620,15 +819,15 @@ void propagate(MySolver &solver)
 
   //void *kernelArgs[] = {&solver};
 
-  #define NUM_THREADS (32*24)
+  #define NUM_THREADS (32*12)
   #define NW (NUM_THREADS/32)
 
+  //test_heap<100><<<1, 1>>>();
 
   cudaEventRecord(start);
   //cudaLaunchCooperativeKernel((void*)&propagate_control2<NW>, 2, NUM_THREADS, kernelArgs,  0/*solver.host_num_vars * sizeof(bool)*/, 0);
   propagate_control2<NW><<<1, NUM_THREADS>>>(solver);
   cudaEventRecord(stop);
-  //empty_test<<<1, 1>>>();
 
   gpuErrchk( cudaPeekAtLastError() );
   gpuErrchk( cudaEventSynchronize(stop) );
@@ -771,106 +970,6 @@ void propagate(MySolver &solver)
 //     }
 //   }
 // }
-
-
-// 1 move over conflicting clause
-// everything from old decision level is added to the conflict clause
-// everything on current decision level is replaced by its reason
-// same rules apply for reason, everything old is added, everything new is replaced
-// we all all this in backwards order of trail
-// stop condition unclear
-__device__ void analyze(bool* seen, unsigned int nVars, CRef confl, Lit* trail, unsigned int trail_size, uint32_t *ca, const int decision_level, AssignVardata* assigns_vardata ,Lit* out_learnt, unsigned int* out_learnt_size, unsigned int* out_btlevel) {
-    int pathC = 0;
-    Lit lit_Undef;
-    lit_Undef.x = -2;
-    Lit p = lit_Undef;
-    *out_learnt_size = 0;
-    //printf("Analyze with trail size %d\n", trail_size);
-    for (int i = 0; i < trail_size; i++) {
-        //printf("trail %d %d\n", var_device(trail[i]), sign_device(trail[i]));
-    }
-
-    /// create shared memory for seen variables in size of variables
-    /// initialize correctly with nvars*sizeof(bool)
-    for (unsigned int i = 0; i < nVars; ++i) {
-      //printf("Accessing shared memory\n");
-      seen[i] = false;
-    }
-    //printf("set all seen to false\n");
-    // in the current decision level which is much smaller, but then indexing gets much harder
-
-    // Generate conflict clause:
-    //
-    *out_learnt_size +=1;  // (leave room for the asserting literal)
-    unsigned int index = trail_size - 1;
-    do {
-        //printf("index %d and pathC %d\n", index, pathC);
-        //printf("ConflictCRef: %d\n", confl);
-        assert(confl != CRef_Undef); // (otherwise should be UIP)
-        const Clause &c = *reinterpret_cast<Clause *>(&ca[reinterpret_cast<uint32_t>(confl)]);
-        //printf("c analysiere %d\n", confl);
-        for (int i = 0; i < c.size(); i++) {
-           //printf("c %d %d with level %d\n", var_device(c[i]), sign_device(c[i]), level_device(var_device(c[i]), assigns_vardata));
-        }
-
-        for(int j = 0; j < c.size(); j++) {
-            Lit q = c[j];
-            if (p == q)
-                continue;
-
-            //printf("check for seen %d\n", var_device(q));
-            if(!seen[var_device(q)]) {
-                //printf("not yet seen\n");
-                if(level_device(var_device(q), assigns_vardata) == 0) {
-                } else { // Here, the old case
-                    seen[var_device(q)] = true;
-                    //printf("compare level %d >= %d\n", level_device(var_device(q), assigns_vardata), decision_level);
-                    if(level_device(var_device(q), assigns_vardata) >= decision_level) {
-                        //printf("increment pathC\n");
-                        pathC++;
-                    } else {
-                        //printf("accessing out_learnt %d and writing %d %d\n", *out_learnt_size, var_device(q), sign_device(q));
-                        out_learnt[(*out_learnt_size)++] = q;
-                    }
-                }
-            }
-        }
-        //printf("end of loop, trailing down with index %d\n", index);
-
-        // Select next clause to look at:
-        while (!seen[var_device(trail[index--])]);
-        //printf("trailed down to %d\n", index);
-        p = trail[index + 1];
-        //printf("next p %d %d\n", var_device(p), sign_device(p));
-        //stats[sumRes]++;
-        confl = reason_device(var_device(p), assigns_vardata);
-        //printf("next confl %d\n", confl);
-        seen[var_device(p)] = false;
-        //printf("set seen %d to false\n", var_device(p));
-        pathC--;
-        //printf("decrement pathC to %d\n", pathC);
-
-    } while(pathC > 0);
-    
-    out_learnt[0] = ~p;
-    
-    // Find correct backtrack level:
-    //
-    if(*out_learnt_size == 1)
-        *out_btlevel = 0;
-    else {
-        int max_i = 1;
-        // Find the first literal assigned at the next-highest level:
-        for(int i = 2; i < *out_learnt_size; i++)
-            if(level_device(var_device(out_learnt[i]), assigns_vardata) > level_device(var_device(out_learnt[max_i]), assigns_vardata))
-                max_i = i;
-        // Swap-in this literal at index 1:
-        Lit p = out_learnt[max_i];
-        out_learnt[max_i] = out_learnt[1];
-        out_learnt[1] = p;
-        *out_btlevel = level_device(var_device(p), assigns_vardata);
-    }
-}
 
 
 // void binary_propagation(
