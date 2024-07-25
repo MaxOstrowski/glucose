@@ -1477,6 +1477,10 @@ lbool Solver::search(int nof_conflicts) {
         performLCM = 0;
     }
 
+    ::create_solver(*this);
+    ::search(nVars());
+    return l_True;
+
 
     for(; ;) {
         if(decisionLevel() == 0) { // We import clauses FIXME: ensure that we will import clauses enventually (restart after some point)
@@ -1486,22 +1490,20 @@ lbool Solver::search(int nof_conflicts) {
                 return l_False;
 
         }
-        std::chrono::high_resolution_clock::time_point t1, t2, t3;
+        // std::chrono::high_resolution_clock::time_point t1, t2, t3;
 
-        
-        MySolver ms = create_solver(*this);
-        t1 = std::chrono::high_resolution_clock::now();
-        std::cout << "before propagate" << std::endl;
-        ::propagate(ms);
-        //myprop.propagate();
-        t2 = std::chrono::high_resolution_clock::now();
-        std::cout << "after propagate" << std::endl;
-        gpu_duration += std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
+        // t1 = std::chrono::high_resolution_clock::now();
+        // std::cout << "before propagate" << std::endl;
+        // // ::search(nVars());
+        // //myprop.propagate();
+        // t2 = std::chrono::high_resolution_clock::now();
+        // std::cout << "after propagate" << std::endl;
+        // gpu_duration += std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
         CRef confl = propagate();
-        t3 = std::chrono::high_resolution_clock::now();
-        cpu_duration += std::chrono::duration_cast<std::chrono::microseconds>(t3 - t2).count();
-        compare(ms, *this, confl);
-        destroy_solver(ms);
+        // t3 = std::chrono::high_resolution_clock::now();
+        // cpu_duration += std::chrono::duration_cast<std::chrono::microseconds>(t3 - t2).count();
+        //compare(ms, *this, confl);
+        //destroy_solver(ms);
         //myprop.compare(*this, confl);
         num_prop += 1;
         if (num_prop%1 == 0){

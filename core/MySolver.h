@@ -5,6 +5,7 @@
 #include "core/SolverTypes.h"
 
 
+
 using namespace Glucose;
 
 
@@ -136,10 +137,10 @@ private:
 
 typedef unsigned char lbool_device;
 
-struct __attribute__((aligned(16))) AssignVardata {
-    lbool_device assign;
-    Solver::VarData vardata;
-  };
+// struct __attribute__((aligned(16))) AssignVardata {
+//     lbool_device assign;
+//     Solver::VarData vardata;
+//   };
 
 struct binWatchVector {
   unsigned int size;
@@ -148,11 +149,12 @@ struct binWatchVector {
   __device__ void push(CRef cref, Lit blocker) {
     if (size == capacity) {
       capacity *= 2;
-      Solver::Watcher* new_watches = new Solver::Watcher[capacity];
+      capacity = capacity == 0 ? 2 : capacity;
+      Solver::Watcher* new_watches = (Solver::Watcher*)malloc(sizeof(Solver::Watcher) * capacity);
       for (int i = 0; i < size; i++) {
         new_watches[i] = watches[i];
       }
-      delete[] watches;
+      free(watches);
       watches = new_watches;
     }
     watches[size++] = Solver::Watcher(cref, blocker);
@@ -167,17 +169,18 @@ struct watchVector {
   __device__ void push(CRef cref) {
     if (size == capacity) {
       capacity *= 2;
-      CRef* new_crefs = new CRef[capacity];
+      capacity = capacity == 0 ? 2 : capacity;
+      CRef* new_crefs = (CRef*)malloc(sizeof(CRef) * capacity);
       for (int i = 0; i < size; i++) {
         new_crefs[i] = crefs[i];
       }
-      delete[] crefs;
+      free(crefs);
       crefs = new_crefs;
     }
     crefs[size++] = cref;
   }    
 };
-
+/*
 struct MySolver {
   unsigned int host_num_vars;
   unsigned int decision_level;
@@ -199,6 +202,7 @@ struct MySolver {
   watchVector* hostWatches;
   watchVector* device_watches;
   unsigned int max_watch_length;
+  uint32_t* host_ca;
   uint32_t* device_ca; // storage for all clauses
   unsigned int* device_ca_size; // pointer to next free index into device_ca
   unsigned int* device_ca_capacity; // size of reverved memory for device_ca
@@ -213,12 +217,12 @@ struct MySolver {
   CudaOrderedHeap* device_decision_heap;
   CudaOrderedHeap* host_decision_heap;
 
-};
+};*/
 
-MySolver create_solver(Solver& solver);
-void propagate(MySolver& my_solver);
-void compare(MySolver &solver, Solver& s, CRef confl);
-void destroy_solver(MySolver &solver);
+void create_solver(Solver& solver);
+void search(unsigned int num_vars);
+void compare(Solver& s, CRef confl);
+void destroy_solver();
 
 
 
